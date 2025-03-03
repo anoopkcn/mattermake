@@ -1,2 +1,0 @@
-epoch_summary:
-  _target_: src.callbacks.epoch_summary_callback.EpochSummaryCallback

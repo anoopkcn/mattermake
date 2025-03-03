@@ -5,6 +5,7 @@ from lightning.pytorch import LightningModule
 # Import your model definition
 from src.models.components.gpt_model import GPT, GPTConfig
 from src.utils.vocab import decode_slice, stoi
+from src.utils import pylogger
 
 
 class GPTModule(LightningModule):
@@ -27,6 +28,7 @@ class GPTModule(LightningModule):
         decay_lr: bool = True,
     ):
         super().__init__()
+        self.custom_logger = pylogger.get_pylogger(__name__)
         self.save_hyperparameters()
 
         # Initialize model
@@ -63,6 +65,26 @@ class GPTModule(LightningModule):
         logits, loss = self.model(input_ids, targets, embeddings=embeddings)
         self.log("val_loss", loss, on_epoch=True, prog_bar=True)
         return loss
+
+    def on_validation_epoch_end(self):
+        # TODO: This can be handled using callback
+        """Log epoch summary at the end of validation."""
+        train_loss = self.trainer.callback_metrics.get("train_loss", float('nan'))
+        val_loss = self.trainer.callback_metrics.get("val_loss", float('nan'))
+
+        # Get current learning rate (if using a learning rate scheduler)
+        current_lr = self.optimizers().param_groups[0]['lr'] if self.trainer.optimizers else None
+
+        # Create and log the summary
+        summary = f"\n=== Epoch {self.current_epoch} Summary ===\n"
+        summary += f"Train Loss: {train_loss:.4f}\n"
+        summary += f"Val Loss: {val_loss:.4f}\n"
+        if current_lr is not None:
+            summary += f"Learning Rate: {current_lr:.2e}\n"
+        summary += "=" * 25
+
+        # Use the existing logger
+        self.custom_logger.info(summary)
 
     def configure_optimizers(self):
         # Filter params that require grad

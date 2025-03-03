@@ -2,7 +2,6 @@ import math
 import torch
 from lightning.pytorch import LightningModule
 
-# Import your model definition
 from src.models.components.gpt_model import GPT, GPTConfig
 from src.utils.vocab import decode_slice, stoi
 from src.utils import pylogger
@@ -108,20 +107,14 @@ class GPTModule(LightningModule):
             return optimizer
 
         # Create learning rate scheduler with explicit ordering
-        scheduler = {
-            "scheduler": torch.optim.lr_scheduler.LambdaLR(
-                optimizer,
-                lr_lambda=self.get_lr_schedule
-            ),
-            "interval": "step",
-            "frequency": 1,
-            "name": "learning_rate"
-        }
+        scheduler = torch.optim.lr_scheduler.LambdaLR(
+            optimizer,
+            lr_lambda=self.get_lr_schedule
+        )
 
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": scheduler
-        }
+        # Return both optimizer and scheduler without the additional configuration
+        # which makes PyTorch Lightning handle them differently
+        return [optimizer], [scheduler]
 
     def get_lr_schedule(self, iter_num):
         # Linear warmup followed by cosine decay

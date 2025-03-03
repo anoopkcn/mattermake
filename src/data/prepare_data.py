@@ -28,7 +28,6 @@ def prepare_slices_data(
     """
     log.info(f"Loading data from {input_path}")
 
-    # Load the data
     data = pd.read_pickle(input_path)
 
     data = {
@@ -36,7 +35,7 @@ def prepare_slices_data(
         'slices': data['slices']
     }
 
-    # Apply data limiting factor
+    # Apply data limiting factor (TODO: change the name of the variable)
     if data_limit_factor < 1.0:
         total_samples = len(data['embeddings'])
         limit_samples = int(total_samples * data_limit_factor)
@@ -49,19 +48,15 @@ def prepare_slices_data(
     log.info(f"Embedding dimension: {embedding_dim}")
     log.info(f"Total number of samples after limiting: {len(data['embeddings'])}")
 
-    # Set random seed for reproducibility
     torch.manual_seed(seed)
 
-    # Shuffle data using PyTorch
     indices = torch.randperm(len(data['embeddings']))
     data['embeddings'] = [data['embeddings'][i.item()] for i in indices]
     data['slices'] = [data['slices'][i.item()] for i in indices]
 
-    # Split into train/val sets
     n = len(data['embeddings'])
     split_idx = int(n*train_ratio)
 
-    # Stack embeddings and convert to float32 for better compatibility
     train_emb = torch.stack([emb.float() for emb in data['embeddings'][:split_idx]])
     val_emb = torch.stack([emb.float() for emb in data['embeddings'][split_idx:]])
 
@@ -71,15 +66,12 @@ def prepare_slices_data(
     log.info(f"Train set: {len(train_emb)} samples")
     log.info(f"Validation set: {len(val_emb)} samples")
 
-    # Encode slices using vocabulary
     log.info("Encoding slices...")
     train_slice_ids = [encode_slice(slice_text) for slice_text in train_slices]
     val_slice_ids = [encode_slice(slice_text) for slice_text in val_slices]
 
-    # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
 
-    # Save embeddings and encoded slices
     train_data = {
         'embeddings': train_emb,
         'slice_ids': train_slice_ids
@@ -89,7 +81,6 @@ def prepare_slices_data(
         'slice_ids': val_slice_ids
     }
 
-    # Save vocabulary info
     meta = {
         'vocab_size': len(vocab),
         'stoi': stoi,
@@ -97,7 +88,6 @@ def prepare_slices_data(
         'embedding_dim': embedding_dim
     }
 
-    # Save to files using PyTorch save
     train_path = os.path.join(output_dir, 'train.pt')
     val_path = os.path.join(output_dir, 'val.pt')
     meta_path = os.path.join(output_dir, 'meta.pkl')

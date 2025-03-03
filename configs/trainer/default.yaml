@@ -7,7 +7,7 @@ max_epochs: 10
 
 accelerator: auto
 devices: auto
-strategy: ddp_find_unused_parameters_true
+strategy: ddp
 
 # mixed precision for faster training
 precision: ${precision}

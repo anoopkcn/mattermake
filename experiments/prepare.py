@@ -18,7 +18,10 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 log = get_pylogger(__name__)
 
-@hydra.main(version_base="1.3", config_path="../configs", config_name="data_preparation")
+
+@hydra.main(
+    version_base="1.3", config_path="../configs", config_name="data_preparation"
+)
 def main(cfg: DictConfig) -> None:
     """Prepare data for training.
 
@@ -33,9 +36,10 @@ def main(cfg: DictConfig) -> None:
         output_dir=cfg.output_dir,
         train_ratio=cfg.train_ratio,
         data_limit_factor=cfg.data_limit_factor,
-        seed=cfg.seed
+        seed=cfg.seed,
     )
     log.info("Data preparation completed!")
+
 
 if __name__ == "__main__":
     seed_everything(42)

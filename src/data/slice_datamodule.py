@@ -15,7 +15,9 @@ class SliceDataset(Dataset):
 
     def __getitem__(self, idx):
         return {
-            "embedding": self.embeddings[idx] if torch.is_tensor(self.embeddings[idx]) else torch.tensor(self.embeddings[idx], dtype=torch.float),
+            "embedding": self.embeddings[idx]
+            if torch.is_tensor(self.embeddings[idx])
+            else torch.tensor(self.embeddings[idx], dtype=torch.float),
             "slice_ids": torch.tensor(self.slice_ids[idx], dtype=torch.long),
         }
 
@@ -52,10 +54,15 @@ class SliceDataModule(LightningDataModule):
             except (FileNotFoundError, RuntimeError):
                 # Fall back to NumPy files if PyTorch files not found
                 import numpy as np
-                train_data = np.load(f"{self.data_dir}/train.npy", allow_pickle=True).item()
+
+                train_data = np.load(
+                    f"{self.data_dir}/train.npy", allow_pickle=True
+                ).item()
                 val_data = np.load(f"{self.data_dir}/val.npy", allow_pickle=True).item()
 
-            self.data_train = SliceDataset(train_data["embeddings"], train_data["slice_ids"])
+            self.data_train = SliceDataset(
+                train_data["embeddings"], train_data["slice_ids"]
+            )
             self.data_val = SliceDataset(val_data["embeddings"], val_data["slice_ids"])
 
     def train_dataloader(self):
@@ -92,11 +99,7 @@ class SliceDataModule(LightningDataModule):
             slice_ids = slice_ids[:max_len]
             seq_len = len(slice_ids)
             if seq_len > 1:  # We need at least two tokens
-                x[i, :seq_len-1] = slice_ids[:-1]
-                y[i, :seq_len-1] = slice_ids[1:]
+                x[i, : seq_len - 1] = slice_ids[:-1]
+                y[i, : seq_len - 1] = slice_ids[1:]
 
-        return {
-            "embeddings": embeddings,
-            "input_ids": x,
-            "target_ids": y
-        }
+        return {"embeddings": embeddings, "input_ids": x, "target_ids": y}

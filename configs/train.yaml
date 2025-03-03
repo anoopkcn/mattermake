@@ -7,7 +7,7 @@ defaults:
   - data: slice.yaml
   - model: gpt.yaml
   - callbacks: default.yaml
-  - logger: null # null means no default loggers
+  - logger: wandb # null means no default loggers
   - trainer: default.yaml
   - paths: default.yaml
   - extras: default.yaml
@@ -23,7 +23,7 @@ task_name: "train"
 # tags to help you identify your experiments
 # you can overwrite this in experiment configs
 # overwrite from command line with `python train.py tags="[first_tag, second_tag]"`
-tags: ["dev"]
+tags: ["gpt-slice-generator"]
 
 # set True to use debugger for debugging
 # can be overwritten from command line with `python train.py debug=True`

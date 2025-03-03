@@ -4,6 +4,7 @@ import re
 import torch
 from lightning.pytorch.plugins.environments import SLURMEnvironment
 
+
 def get_first_node():
     """Return the first node we can find in the Slurm node list."""
     nodelist = os.getenv("SLURM_JOB_NODELIST")

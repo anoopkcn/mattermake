@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Optional
 
+
 @dataclass
 class GenerationConfig:
     """Configuration for text generation with the GPT model."""

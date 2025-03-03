@@ -39,7 +39,7 @@ class GPTModule(LightningModule):
             bias=bias,
             vocab_size=vocab_size,
             dropout=dropout,
-            embedding_dim=embedding_dim
+            embedding_dim=embedding_dim,
         )
         config = GPTConfig(**model_args)
         self.model = GPT(config)
@@ -68,11 +68,13 @@ class GPTModule(LightningModule):
     def on_validation_epoch_end(self):
         # TODO: This can be handled using callback
         """Log epoch summary at the end of validation."""
-        train_loss = self.trainer.callback_metrics.get("train_loss", float('nan'))
-        val_loss = self.trainer.callback_metrics.get("val_loss", float('nan'))
+        train_loss = self.trainer.callback_metrics.get("train_loss", float("nan"))
+        val_loss = self.trainer.callback_metrics.get("val_loss", float("nan"))
 
         # Get current learning rate (if using a learning rate scheduler)
-        current_lr = self.optimizers().param_groups[0]['lr'] if self.trainer.optimizers else None
+        current_lr = (
+            self.optimizers().param_groups[0]["lr"] if self.trainer.optimizers else None
+        )
 
         # Create and log the summary
         summary = f"\n=== Epoch {self.current_epoch} Summary ===\n"
@@ -94,13 +96,11 @@ class GPTModule(LightningModule):
         nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
         optim_groups = [
             {"params": decay_params, "weight_decay": self.hparams.weight_decay},
-            {"params": nodecay_params, "weight_decay": 0.0}
+            {"params": nodecay_params, "weight_decay": 0.0},
         ]
 
         optimizer = torch.optim.AdamW(
-            optim_groups,
-            lr=self.hparams.learning_rate,
-            betas=self.hparams.betas
+            optim_groups, lr=self.hparams.learning_rate, betas=self.hparams.betas
         )
 
         if not self.hparams.decay_lr:
@@ -108,8 +108,7 @@ class GPTModule(LightningModule):
 
         # Create learning rate scheduler with explicit ordering
         scheduler = torch.optim.lr_scheduler.LambdaLR(
-            optimizer,
-            lr_lambda=self.get_lr_schedule
+            optimizer, lr_lambda=self.get_lr_schedule
         )
 
         # Return both optimizer and scheduler without the additional configuration
@@ -131,7 +130,9 @@ class GPTModule(LightningModule):
         if iter_num > lr_decay_iters:
             return min_lr / learning_rate
 
-        decay_ratio = float(iter_num - warmup_iters) / float(max(1, lr_decay_iters - warmup_iters))
+        decay_ratio = float(iter_num - warmup_iters) / float(
+            max(1, lr_decay_iters - warmup_iters)
+        )
         coeff = 0.5 * (1.0 + torch.cos(torch.tensor(math.pi * decay_ratio))).item()
         return (min_lr + coeff * (learning_rate - min_lr)) / learning_rate
 
@@ -141,8 +142,10 @@ class GPTModule(LightningModule):
         embedding_tensor = embeddings.to(self.device)
 
         # Start with <START> token
-        start_token_id = stoi['<START>']
-        start_tokens = torch.tensor([[start_token_id]], dtype=torch.long, device=self.device)
+        start_token_id = stoi["<START>"]
+        start_tokens = torch.tensor(
+            [[start_token_id]], dtype=torch.long, device=self.device
+        )
 
         with torch.no_grad():
             tokens = self.model.generate(
@@ -150,8 +153,10 @@ class GPTModule(LightningModule):
                 embeddings=embedding_tensor,
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
-                top_k=top_k
+                top_k=top_k,
             )
 
-        generated_slices = [decode_slice(tokens[i].tolist()) for i in range(tokens.size(0))]
+        generated_slices = [
+            decode_slice(tokens[i].tolist()) for i in range(tokens.size(0))
+        ]
         return generated_slices

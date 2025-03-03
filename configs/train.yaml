@@ -1,0 +1,55 @@
+# @package _global_
+
+# specify here default configuration
+# order of defaults determines the order in which configs override each other
+defaults:
+  - _self_
+  - data: slice.yaml
+  - model: gpt.yaml
+  - callbacks: default.yaml
+  - logger: null # null means no default loggers
+  - trainer: default.yaml
+  - paths: default.yaml
+  - extras: default.yaml
+  - hydra: default.yaml
+
+  # experiment configs allow for version control of specific hyperparameters
+  # e.g. best hyperparameters for a specific model on a specific dataset
+  - experiment: null
+
+# task name, determines output directory path
+task_name: "train"
+
+# tags to help you identify your experiments
+# you can overwrite this in experiment configs
+# overwrite from command line with `python train.py tags="[first_tag, second_tag]"`
+tags: ["dev"]
+
+# set True to use debugger for debugging
+# can be overwritten from command line with `python train.py debug=True`
+debug: False
+
+# disable python warnings if they annoy you
+ignore_warnings: True
+
+# set seed for random number generators in pytorch, numpy and python.random
+seed: 42
+
+# use 16-bit precision for training
+precision: 16-mixed
+
+# compile model for faster training
+compile: False
+
+# run training
+train: True
+
+# checkpoint to resume training from, could be one of:
+# - null: train from scratch
+# - "last": resume from last checkpoint
+# - path/to/checkpoint.ckpt: resume from given checkpoint path
+ckpt_path: null
+
+# evaluate on test set, using the best model weights achieved during training
+# lightning chooses best weights based on the metric specified in checkpoint callback
+test: False

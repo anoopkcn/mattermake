@@ -1,0 +1,6 @@
+_target_: src.data.slice_datamodule.SliceDataModule
+
+data_dir: ${paths.data_dir}/slice
+batch_size: 16
+num_workers: 4
+block_size: 1024

@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --account=westai0036
-#SBATCH --nodes=4
+#SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
 #SBATCH --time=12:00:00
 #SBATCH --partition=dc-hwai
-#SBATCH --output=/p/project1/hai_solaihack/chandran1/solai-hackathon-2025/experiments/train_%j.out
-#SBATCH --error=/p/project1/hai_solaihack/chandran1/solai-hackathon-2025/experiments/train_%j.err
+#SBATCH --output=/p/project1/hai_solaihack/chandran1/solai-hackathon-2025/experiments/gen_%j.out
+#SBATCH --error=/p/project1/hai_solaihack/chandran1/solai-hackathon-2025/experiments/gen_%j.err
 
 export TOKENIZERS_PARALLELISM=false
 export TRANSFORMERS_OFFLINE=1
@@ -20,5 +20,5 @@ srun --gres=gpu:4 --nodes=${SLURM_JOB_NUM_NODES} --ntasks-per-node=4 --cpu-bind=
     export PYTHONPATH=''
     source /p/project1/hai_solaihack/chandran1/solai-hackathon-2025/.venv/bin/activate
     cd /p/project1/hai_solaihack/chandran1/solai-hackathon-2025/experiments
-    python train.py trainer.num_nodes=$SLURM_JOB_NUM_NODES
+    python generate.py evaluate_all=true
 "

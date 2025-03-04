@@ -160,3 +160,30 @@ class GPTModule(LightningModule):
             decode_slice(tokens[i].tolist()) for i in range(tokens.size(0))
         ]
         return generated_slices
+
+    def batch_generate(self, embeddings, max_new_tokens=100, temperature=0.7, top_k=40):
+        """Generate multiple slices from batched embeddings"""
+        self.model.eval()
+        batch_size = embeddings.shape[0]
+
+        # Start with <START> token for all samples in batch
+        start_token_id = stoi["<START>"]
+        start_tokens = torch.tensor(
+            [[start_token_id] for _ in range(batch_size)],
+            dtype=torch.long,
+            device=self.device,
+        )
+
+        with torch.no_grad():
+            tokens = self.model.generate(
+                idx=start_tokens,
+                embeddings=embeddings,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_k=top_k,
+            )
+
+        generated_slices = [
+            decode_slice(tokens[i].tolist()) for i in range(tokens.size(0))
+        ]
+        return generated_slices

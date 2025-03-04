@@ -7,6 +7,7 @@ import hydra
 import rootutils
 import json
 import os
+import tqdm
 
 import numpy as np
 from omegaconf import DictConfig
@@ -46,7 +47,16 @@ def generate(cfg: DictConfig):
         )
         model.load_state_dict(checkpoint["state_dict"])
 
+    # Apply optimizations
     model = model.to(cfg.device)
+    if cfg.get("use_half_precision", True):
+        log.info("Using half precision (float16) for inference")
+        model = model.half()
+
+    if cfg.get("use_compile", False) and hasattr(torch, "compile"):
+        log.info("Using torch.compile to optimize model for inference")
+        model.model = torch.compile(model.model, mode="reduce-overhead")
+
     model.eval()
 
     # Load data for generation
@@ -58,49 +68,103 @@ def generate(cfg: DictConfig):
         # Fall back to numpy if needed
         data = np.load(cfg.data_path, allow_pickle=True).item()
 
-    embeddings = data["embeddings"][: cfg.num_samples]
+    # Use all validation samples or limit by cfg.num_samples
+    num_samples = (
+        len(data["embeddings"])
+        if cfg.get("evaluate_all", False)
+        else min(cfg.num_samples, len(data["embeddings"]))
+    )
+    total_embeddings = data["embeddings"][:num_samples]
 
     if "slice_ids" in data and cfg.show_original:
-        true_slices = [decode_slice(s) for s in data["slice_ids"][: cfg.num_samples]]
+        true_slices = [decode_slice(s) for s in data["slice_ids"][:num_samples]]
     else:
         true_slices = None
+        log.warning(
+            "No original slices found in data. Only generated slices will be saved."
+        )
 
-    log.info("Generating slices...")
+    # Configure batch size for generation
+    batch_size = cfg.get("generation_batch_size", 32)
+    log.info(f"Generating {num_samples} slices with batch size {batch_size}...")
+
     results = []
 
-    for i, embedding in enumerate(embeddings):
-        log.info(f"Generating sample {i+1}/{cfg.num_samples}")
-        embedding_tensor = (
-            torch.tensor(embedding).float().unsqueeze(0).to(cfg.device)
-            if not torch.is_tensor(embedding)
-            else embedding.float().unsqueeze(0).to(cfg.device)
-        )
+    # Process in batches
+    for i in tqdm.tqdm(range(0, num_samples, batch_size), desc="Generating batches"):
+        batch_embeddings = total_embeddings[i : min(i + batch_size, num_samples)]
 
-        # Generate using the model's generate method without passing the idx parameter
-        generated_slices = model.generate(
-            embeddings=embedding_tensor,
-            max_new_tokens=cfg.max_new_tokens,
-            temperature=cfg.temperature,
-            top_k=cfg.top_k,
-        )
+        # Handle different embedding formats correctly
+        if isinstance(batch_embeddings, torch.Tensor):
+            # If already a tensor (which might be the case with data["embeddings"])
+            embedding_tensor = batch_embeddings.to(cfg.device)
+        elif isinstance(batch_embeddings, list) and torch.is_tensor(
+            batch_embeddings[0]
+        ):
+            # If list of tensors
+            embedding_tensor = torch.stack(batch_embeddings).to(cfg.device)
+        else:
+            # If numpy arrays or other format
+            embedding_tensor = torch.tensor(batch_embeddings, dtype=torch.float).to(
+                cfg.device
+            )
 
-        # Get the first generated slice
-        decoded_slice = generated_slices[0]
-        log.info(f"Generated: {decoded_slice}")
+        if cfg.get("use_half_precision", True):
+            embedding_tensor = embedding_tensor.half()
 
-        if true_slices and i < len(true_slices):
-            log.info(f"Original:  {true_slices[i]}")
+        # Generate slices for the entire batch
+        with torch.no_grad():
+            if hasattr(model, "batch_generate"):
+                # Use batch_generate if available
+                batch_outputs = model.batch_generate(
+                    embeddings=embedding_tensor,
+                    max_new_tokens=cfg.max_new_tokens,
+                    temperature=cfg.temperature,
+                    top_k=cfg.top_k,
+                )
+            else:
+                # Fall back to individual generation
+                batch_outputs = []
+                for j in range(embedding_tensor.size(0)):
+                    single_embedding = embedding_tensor[
+                        j : j + 1
+                    ]  # Keep batch dimension
+                    generated = model.generate(
+                        embeddings=single_embedding,
+                        max_new_tokens=cfg.max_new_tokens,
+                        temperature=cfg.temperature,
+                        top_k=cfg.top_k,
+                    )
+                    batch_outputs.append(
+                        generated[0]
+                    )  # First element from each generation
 
-        log.info("---")
+        # Process results
+        for j, decoded_slice in enumerate(batch_outputs):
+            global_idx = i + j
 
-        results.append(
-            {
-                "generated": decoded_slice,
-                "original": true_slices[i]
-                if true_slices and i < len(true_slices)
-                else None,
-            }
-        )
+            # Only print details for a few samples when evaluating all
+            if cfg.get("evaluate_all", False) and global_idx < 5:
+                log.info(f"Sample {global_idx+1} Generated: {decoded_slice}")
+                if true_slices and global_idx < len(true_slices):
+                    log.info(
+                        f"Sample {global_idx+1} Original:  {true_slices[global_idx]}"
+                    )
+                log.info("---")
+            elif not cfg.get("evaluate_all", False):
+                log.info(f"Generated: {decoded_slice}")
+                if true_slices and global_idx < len(true_slices):
+                    log.info(f"Original:  {true_slices[global_idx]}")
+                log.info("---")
+
+            results.append(
+                {
+                    "generated": decoded_slice,
+                    "original": true_slices[global_idx]
+                    if true_slices and global_idx < len(true_slices)
+                    else None,
+                }
+            )
 
     # Save results if specified
     if cfg.output_path:
@@ -109,7 +173,7 @@ def generate(cfg: DictConfig):
 
         with open(cfg.output_path, "w") as f:
             json.dump(results, f, indent=2)
-        log.info(f"Saved results to {cfg.output_path}")
+        log.info(f"Saved {len(results)} results to {cfg.output_path}")
 
     log.info("Generation complete!")
 

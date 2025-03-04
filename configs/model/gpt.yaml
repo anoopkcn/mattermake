@@ -1,9 +1,9 @@
 _target_: src.models.gpt_module.GPTModule
 
 # Model architecture
-n_layer: 36
-n_head: 20
-n_embd: 1280
+n_layer: 48
+n_head: 25
+n_embd: 1600
 block_size: 1024
 bias: false
 vocab_size: 94  # Match your vocabulary size

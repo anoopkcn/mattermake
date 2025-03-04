@@ -247,6 +247,9 @@ class GPT(nn.Module):
         """
         Generate new tokens given a prompt and optional embeddings
         """
+        # Set the model to evaluation mode
+        self.eval()
+
         for _ in range(max_new_tokens):
             # Crop the sequence if it's getting too long
             idx_cond = (
@@ -255,10 +258,10 @@ class GPT(nn.Module):
                 else idx[:, -self.config.block_size :]
             )
 
-            # Forward the model to get logits
+            # Forward the model to get logits - this handles the batch dimension
             logits, _ = self(idx_cond, embeddings=embeddings)
 
-            # Focus on the last token
+            # Focus on the last token for each sample in the batch
             logits = logits[:, -1, :] / temperature
 
             # Apply top-k filtering if specified
@@ -269,10 +272,10 @@ class GPT(nn.Module):
             # Apply softmax to convert to probabilities
             probs = F.softmax(logits, dim=-1)
 
-            # Sample the next token
+            # Sample the next token for each sample in the batch
             idx_next = torch.multinomial(probs, num_samples=1)
 
-            # Append the new token to our sequence
+            # Append the new tokens to our sequence
             idx = torch.cat((idx, idx_next), dim=1)
 
             # Stop if EOS token is generated (in any sample in the batch)

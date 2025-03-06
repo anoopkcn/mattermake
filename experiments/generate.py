@@ -41,11 +41,14 @@ def generate(cfg: DictConfig):
     model: LightningModule = hydra.utils.instantiate(cfg.model)
 
     if cfg.ckpt_path:
-        log.info(f"Loading weights from checkpoint: {cfg.ckpt_path}")
-        checkpoint = torch.load(
-            cfg.ckpt_path, map_location=cfg.device, weights_only=False
-        )
+        log.info(f"Loading weights from checkpoint on CPU: {cfg.ckpt_path}")
+        checkpoint = torch.load(cfg.ckpt_path, map_location="cpu", weights_only=False)
         model.load_state_dict(checkpoint["state_dict"])
+
+        # Now move to GPU and convert to half precision
+        model = model.to(cfg.device)
+        if cfg.get("use_half_precision", True):
+            model = model.half()
 
     # Apply optimizations
     model = model.to(cfg.device)

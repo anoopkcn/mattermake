@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --account=westai0036
-#SBATCH --nodes=1
+#SBATCH --nodes=2
 #SBATCH --ntasks-per-node=4
 #SBATCH --time=12:00:00
 #SBATCH --partition=dc-hwai
@@ -20,5 +20,5 @@ srun --gres=gpu:4 --nodes=${SLURM_JOB_NUM_NODES} --ntasks-per-node=4 --cpu-bind=
     export PYTHONPATH=''
     source /p/project1/hai_solaihack/chandran1/solai-hackathon-2025/.venv/bin/activate
     cd /p/project1/hai_solaihack/chandran1/solai-hackathon-2025/experiments
-    python generate.py evaluate_all=true
+    python generate.py model=cross_attention_gpt evaluate_all=true
 "

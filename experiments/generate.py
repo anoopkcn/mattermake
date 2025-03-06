@@ -19,7 +19,7 @@ from src.utils.vocab import decode_slice
 from src import utils
 from src.utils.init import (
     configure_pytorch,
-    # init_distributed_mode,
+    init_distributed_mode,
     log_distributed_settings,
     patch_lightning_slurm_master_addr,
 )
@@ -186,7 +186,7 @@ def generate(cfg: DictConfig):
 if __name__ == "__main__":
     pl.seed_everything(42)
     patch_lightning_slurm_master_addr()
-    # init_distributed_mode(port=12354)
+    init_distributed_mode(port=12354)
     log_distributed_settings(log)
     configure_pytorch(log)
     generate()

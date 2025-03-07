@@ -36,7 +36,11 @@ class EquivariantConv(MessagePassing):
             nn.Linear(output_dim, output_dim)
         )
 
-        self.norm = BatchNorm(output_dim)
+        # Create an appropriate Irreps object for BatchNorm
+        # This creates a scalar representation (l=0) with multiplicity=output_dim
+        irreps_str = f"{output_dim}x0e"  # 'e' for even parity (scalar)
+        self.irreps = o3.Irreps(irreps_str)
+        self.norm = BatchNorm(self.irreps)
 
     def forward(self, x, edge_index, edge_attr=None, pos=None):
         row, col = edge_index
@@ -63,12 +67,55 @@ class EquivariantConv(MessagePassing):
         out = torch.cat([out, x], dim=1)
         out = self.output_mlp(out)
 
-        out = self.norm(out)
+        # Modify this to work with the e3nn BatchNorm
+        # We need to reshape for BatchNorm and reshape back
+        batch_size = out.shape[0]
+        out = out.reshape(batch_size, -1)  # flatten features
+        out = self.norm(out)  # apply norm
 
         return out
 
     def message(self, x_j, edge_attr):
         return x_j * edge_attr
+
+
+# Custom implementation of scatter_mean to replace torch_scatter
+def custom_scatter_mean(src, index, dim_size=None):
+    """
+    Replacement for torch_scatter.scatter_mean
+
+    Args:
+        src: Source tensor
+        index: Index tensor
+        dim_size: Size of the output tensor
+
+    Returns:
+        Mean of elements in src grouped by index
+    """
+    if dim_size is None:
+        dim_size = int(index.max()) + 1
+
+    output = torch.zeros(dim_size, *src.shape[1:], device=src.device, dtype=src.dtype)
+    count = torch.zeros(dim_size, device=src.device, dtype=src.dtype)
+
+    index_expanded = index.view(-1, *([1] * (src.dim() - 1)))
+    index_expanded = index_expanded.expand_as(src)
+
+    # Sum values
+    output.scatter_add_(0, index_expanded, src)
+
+    # Count values
+    ones = torch.ones_like(index, device=src.device)
+    count.scatter_add_(0, index, ones)
+
+    # Avoid division by zero
+    count = torch.clamp(count, min=1)
+    count = count.view(dim_size, *([1] * (src.dim() - 1)))
+
+    # Compute mean
+    output = output / count
+
+    return output
 
 
 class EquivariantUNet(nn.Module):
@@ -243,7 +290,10 @@ class EquivariantUNet(nn.Module):
         atom_output = self.atom_type_head(h)
         position_output = self.position_head(h)
 
-        pooled = scatter_mean(h, batch=torch.arange(batch_size, device=h.device).repeat_interleave(h.size(0) // batch_size))
+        # Use our custom scatter_mean instead of torch_scatter.scatter_mean
+        batch_indices = torch.arange(batch_size, device=h.device).repeat_interleave(h.size(0) // batch_size)
+        pooled = custom_scatter_mean(h, batch_indices, batch_size)
+
         pooled = pooled + lattice_features.mean(dim=1)
         lattice_output = self.lattice_head(pooled)
 
@@ -265,8 +315,11 @@ class EquivariantBlock(nn.Module):
 
         self.attention = EquivariantAttention(output_dim, num_heads)
 
-        self.norm1 = BatchNorm(output_dim)
-        self.norm2 = BatchNorm(output_dim)
+        irreps_str = f"{output_dim}x0e"
+        self.irreps = o3.Irreps(irreps_str)
+
+        self.norm1 = BatchNorm(self.irreps)
+        self.norm2 = BatchNorm(self.irreps)
 
     def forward(self, x, edge_index, edge_attr, pos):
         h = self.conv1(x, edge_index, edge_attr, pos)

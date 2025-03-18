@@ -1,0 +1,41 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - data: crystal_datamodule.yaml
+  - model: crystal_autoencoder.yaml
+  - callbacks: default.yaml
+  - logger: wandb
+  - trainer: default.yaml
+  - paths: default.yaml
+  - extras: default.yaml
+  - hydra: default.yaml
+  - experiment: null
+
+# task name, determines output directory path
+task_name: "train_autoencoder"
+
+# tags to help you identify your experiments
+tags: ["crystal-autoencoder"]
+
+# debugging
+debug: False
+ignore_warnings: True
+
+# set seed for random number generators in pytorch, numpy and python.random
+seed: 42
+
+# use 16-bit precision for training
+precision: 16-mixed
+
+# compile model for faster training (may not be supported for all model types)
+compile: False
+
+# run training
+train: True
+
+# checkpoint to resume training from
+ckpt_path: null
+
+# evaluate on test set
+test: False

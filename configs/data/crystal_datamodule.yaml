@@ -1,0 +1,13 @@
+_target_: src.data.crystal_datamodule.CrystalDataModule
+
+data_dir: "${paths.data_dir}/processed"
+train_file: "train.pt"
+val_file: "val.pt"
+test_file: "test.pt"
+batch_size: 32
+num_workers: 4
+max_atoms: 80
+num_atom_types: 95
+include_properties: true
+use_data_augmentation: true
+pin_memory: true

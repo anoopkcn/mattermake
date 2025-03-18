@@ -1,0 +1,44 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - model: crystal_autoencoder.yaml
+  - paths: default.yaml
+  - hydra: default.yaml
+
+# Task name for Hydra configuration
+task_name: "generate_autoencoder"
+
+# Path to the checkpoint of the trained model
+ckpt_path: ${paths.log_dir}/train_autoencoder/runs/last/checkpoints/last.ckpt
+
+# Device to run the model on
+device: "cuda"
+
+# Generation mode:
+# - "generate": Generate new structures from random latents
+# - "reconstruct": Reconstruct from input structures
+# - "interpolate": Interpolate between two structures
+# - "conditional": Generate from provided latent codes
+mode: "generate"
+
+# Parameters for "generate" mode
+num_samples: 10
+num_atoms: 30  # Set to 0 to use default from model config
+
+# Parameters for "reconstruct" mode
+input_path: null
+
+# Parameters for "interpolate" mode
+start_path: null
+end_path: null
+num_steps: 10
+
+# Parameters for "conditional" mode
+latent_path: null
+
+# Output path to save results
+output_path: ${paths.root_dir}/results/autoencoder_generated_crystals.json
+
+# For reproducibility
+seed: 42

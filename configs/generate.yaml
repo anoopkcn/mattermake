@@ -30,7 +30,7 @@ generation_batch_size: 128
 evaluate_all: false
 
 # Output path to save results (set to null to skip saving)
-output_path: ${paths.root_dir}/results/generation_results_cross_110M_full.json
+output_path: ${paths.root_dir}/results/generation_results_cross_large_full.json
 
 # For reproducibility
 seed: 42

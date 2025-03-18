@@ -6,7 +6,14 @@ from tqdm.auto import tqdm
 class CrystalDiffusionProcess:
     def __init__(self, config):
         self.config = config
-        self.device = config.device
+
+        if isinstance(config.device, int):
+            self.device = f"cuda:{config.device}" if torch.cuda.is_available() else "cpu"
+        elif isinstance(config.device, str):
+            self.device = config.device
+        else:
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+
         self.timesteps = config.timesteps
 
         if config.beta_schedule == "linear":
@@ -100,6 +107,18 @@ class CrystalDiffusionProcess:
 
     @torch.no_grad()
     def p_sample(self, model, x_t, t, condition=None):
+        """
+        Forward pass of the diffusion model.
+
+        Args:
+            model: The model to predict noise
+            x_t: Dictionary containing noisy crystal data
+            t: Diffusion timesteps
+            condition: Optional [B, latent_dim] tensor of latent embeddings for conditioning
+
+        Returns:
+            Dictionary with predicted next step
+        """
         noise_pred = model(x_t, t, condition)
 
         x_t_minus_1 = {}
@@ -140,6 +159,17 @@ class CrystalDiffusionProcess:
 
     @torch.no_grad()
     def p_sample_loop(self, model, shape, condition=None):
+        """
+        Generate samples by iteratively denoising from random noise.
+
+        Args:
+            model: The noise prediction model
+            shape: Tuple of (batch_size, num_atoms) for generation
+            condition: Optional conditioning tensor (latent code)
+
+        Returns:
+            Dictionary with generated crystal structures
+        """
         device = next(model.parameters()).device
 
         if not isinstance(shape, tuple) or len(shape) != 2:

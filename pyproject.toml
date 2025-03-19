@@ -3,13 +3,12 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "solaihack2025"
+name = "matter-encode"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11, <3.13"
 dependencies = [
-    "e3nn>=0.5.5",
     "hydra-colorlog==1.2.0",
     "hydra-core==1.3.2",
     "hydra-optuna-sweeper==1.2.0",
@@ -37,7 +36,7 @@ filterwarnings = [
   "ignore::DeprecationWarning",
   "ignore::UserWarning",
 ]
-log_cli = "True"
+log_cli = true
 markers = [
   "slow: slow tests",
 ]
@@ -56,4 +55,5 @@ exclude_lines = [
 dev = [
     "ipykernel>=6.29.5",
     "matplotlib>=3.10.1",
+    "ruff>=0.11.0",
 ]

@@ -8,8 +8,6 @@ from torch_geometric.loader import DataLoader
 
 @dataclass
 class CrystalGraphData(Data):
-    """Data structure for crystal graphs that inherits from torch_geometric.data.Data"""
-
     material_id: str
 
     def __init__(

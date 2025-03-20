@@ -1,43 +1,48 @@
-from typing import Optional
+from typing import Optional, List
 import torch
-import pickle
-import polars as pl
+from dataclasses import dataclass
 from torch_geometric.data import Dataset, Data
 from lightning.pytorch import LightningDataModule
 from torch_geometric.loader import DataLoader
 
 
-class CrystalDataset(Dataset):
+@dataclass
+class CrystalGraphData(Data):
+    """Data structure for crystal graphs that inherits from torch_geometric.data.Data"""
+
+    material_id: str
+
     def __init__(
         self,
-        data: pl.DataFrame,
-        transform=None,
-        pre_transform=None,
+        material_id: str,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_attr: torch.Tensor,
+        cell_params: torch.Tensor,
+        num_nodes: int,
     ):
-        super().__init__(transform, pre_transform)
-        self.data = data
-
-    def len(self):
-        return self.data.shape[0]
-
-    def get(self, idx):
-        structure = self.data[idx]
-
-        node_features = torch.tensor(structure["node_features"].item())
-        edge_index = torch.tensor(structure["edge_index"].item())
-        edge_features = torch.tensor(structure["edge_features"].item())
-        cell_params = torch.tensor(structure["cell_params"].item())
-        num_nodes = torch.tensor(structure["num_nodes"].item())
-
-        data = Data(
-            x=node_features,
+        super().__init__(
+            x=x,
             edge_index=edge_index,
-            edge_attr=edge_features,
+            edge_attr=edge_attr,
             cell_params=cell_params,
             num_nodes=num_nodes,
         )
+        self.material_id = material_id
 
-        return data
+
+class CrystalDataset(Dataset):
+    def __init__(
+        self, data_list: List[CrystalGraphData], transform=None, pre_transform=None
+    ):
+        super().__init__(transform, pre_transform)
+        self.data = data_list
+
+    def len(self):
+        return len(self.data)
+
+    def get(self, idx):
+        return self.data[idx]
 
 
 class CrystalDataModule(LightningDataModule):
@@ -66,26 +71,16 @@ class CrystalDataModule(LightningDataModule):
     def setup(self, stage: Optional[str] = None):
         if stage == "fit" or stage is None:
             try:
-                with open(f"{self.data_dir}/train.pkl", "rb") as f:
-                    train_data = pickle.load(f)
-                with open(f"{self.data_dir}/val.pkl", "rb") as f:
-                    val_data = pickle.load(f)
-                with open(f"{self.data_dir}/test.pkl", "rb") as f:
-                    test_data = pickle.load(f)
-            except (FileNotFoundError, RuntimeError):
-                import numpy as np
+                train_data = torch.load(f"{self.data_dir}/train.pt")
+                val_data = torch.load(f"{self.data_dir}/val.pt")
+                test_data = torch.load(f"{self.data_dir}/test.pt")
 
-                train_data = np.load(
-                    f"{self.data_dir}/train.npy", allow_pickle=True
-                ).item()
-                val_data = np.load(f"{self.data_dir}/val.npy", allow_pickle=True).item()
-                test_data = np.load(
-                    f"{self.data_dir}/test.npy", allow_pickle=True
-                ).item()
+                self.data_train = CrystalDataset(train_data)
+                self.data_val = CrystalDataset(val_data)
+                self.data_test = CrystalDataset(test_data)
 
-            self.data_train = CrystalDataset(train_data)
-            self.data_val = CrystalDataset(val_data)
-            self.data_test = CrystalDataset(test_data)
+            except Exception as e:
+                raise RuntimeError(f"Error loading data from {self.data_dir}: {str(e)}")
 
     def train_dataloader(self):
         return DataLoader(

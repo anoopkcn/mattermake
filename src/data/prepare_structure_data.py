@@ -1,44 +1,83 @@
 import os
 import torch
-import polars as pl
-import argparse
-import pickle
-from typing import Dict, Optional
+from typing import Optional, List, Tuple
+import csv
 
 from pymatgen.core import Structure
 from src.utils.crystal_to_graph import structure_to_quotient_graph
 from src.utils.pylogger import get_pylogger
+from src.data.crystal_datamodule import CrystalGraphData
 
 log = get_pylogger(__name__)
 
 
-def parse_cif_to_structure(cif_string: str) -> Optional[Dict]:
+def parse_cif_to_structure(
+    cif_string: str, material_id: str
+) -> Optional[CrystalGraphData]:
     """Parse CIF string to graph components with error handling."""
     try:
         structure = Structure.from_str(cif_string, fmt="cif")
-        return structure_to_quotient_graph(structure)
+        node_features, edge_index, edge_features, cell_params = (
+            structure_to_quotient_graph(structure)
+        )
+
+        return CrystalGraphData(
+            material_id=material_id,
+            x=node_features,
+            edge_index=edge_index,
+            edge_attr=edge_features,
+            cell_params=cell_params,
+            num_nodes=node_features.size(0),
+        )
     except Exception as e:
-        log.warning(f"Error parsing CIF: {e}")
+        log.warning(f"Error parsing CIF for {material_id}: {e}")
         return None
 
 
-def process_batch(cif_strings: list) -> list:
-    """Process a batch of CIF strings sequentially."""
+def process_batch(
+    material_ids: List[str], cif_strings: List[str]
+) -> List[CrystalGraphData]:
+    """Process a batch of CIF strings to CrystalGraphData objects."""
     results = []
-    for cif_string in cif_strings:
-        result = parse_cif_to_structure(cif_string)
+    for material_id, cif_string in zip(material_ids, cif_strings):
+        result = parse_cif_to_structure(cif_string, material_id)
         if result is not None:
-            node_features, edge_index, edge_features, cell_params = result
-            results.append(
-                {
-                    "node_features": node_features,
-                    "edge_index": edge_index,
-                    "edge_features": edge_features,
-                    "cell_params": cell_params,
-                    "num_nodes": node_features.size(0),
-                }
-            )
+            results.append(result)
     return results
+
+
+def load_csv_data(input_path: str, data_limit: float) -> List[Tuple[str, str]]:
+    """Load data from CSV file."""
+    with open(input_path, "r") as f:
+        reader = csv.DictReader(f)
+        data = [(row["material_id"], row["cif"]) for row in reader]
+
+    if data_limit < 1.0:
+        limit_samples = int(len(data) * data_limit)
+        log.info(
+            f"Limiting data to {data_limit:.1%}: {limit_samples}/{len(data)} samples"
+        )
+        data = data[:limit_samples]
+
+    return data
+
+
+def split_data(
+    data: List[CrystalGraphData], train_ratio: float, seed: int
+) -> Tuple[List[CrystalGraphData], List[CrystalGraphData], List[CrystalGraphData]]:
+    """Split data into train, validation and test sets."""
+    torch.manual_seed(seed)
+    n = len(data)
+    indices = torch.randperm(n).tolist()
+
+    train_size = int(n * train_ratio)
+    val_size = int(n * (1 - train_ratio) / 2)
+
+    train_data = [data[i] for i in indices[:train_size]]
+    val_data = [data[i] for i in indices[train_size : train_size + val_size]]
+    test_data = [data[i] for i in indices[train_size + val_size :]]
+
+    return train_data, val_data, test_data
 
 
 def prepare_structure_data(
@@ -49,69 +88,31 @@ def prepare_structure_data(
     seed: int = 42,
     batch_size: int = 1000,
 ):
-    data = pl.scan_csv(input_path, null_values=["nan"]).select(["material_id", "cif"])
+    raw_data = load_csv_data(input_path, data_limit)
 
-    if data_limit < 1.0:
-        total_samples = data.collect().shape[0]
-        limit_samples = int(total_samples * data_limit)
-        log.info(
-            f"Limiting data to {data_limit:.1%}: {limit_samples}/{total_samples} samples"
-        )
-        data = data.limit(limit_samples)
+    all_graphs = []
+    for i in range(0, len(raw_data), batch_size):
+        batch = raw_data[i : i + batch_size]
+        material_ids, cif_strings = zip(*batch)
+        batch_results = process_batch(material_ids, cif_strings)
+        all_graphs.extend(batch_results)
 
-    data = data.collect()
+    train_data, val_data, test_data = split_data(all_graphs, train_ratio, seed)
 
-    # Process data in batches
-    structures = []
-    for i in range(0, len(data), batch_size):
-        batch = data[i : i + batch_size]
-        batch_results = process_batch(batch["cif"].to_list())
-        structures.extend(batch_results)
-
-    # Create result dataframe efficiently
-    result_data = pl.DataFrame(
-        {
-            "material_id": data["material_id"],
-            "structures": structures,
-            "node_features": [s["node_features"] for s in structures],
-            "edge_index": [s["edge_index"] for s in structures],
-            "edge_features": [s["edge_features"] for s in structures],
-            "cell_params": [s["cell_params"] for s in structures],
-            "num_nodes": [s["num_nodes"] for s in structures],
-        }
-    )
-
-    # Split data
-    torch.manual_seed(seed)
-    n = len(result_data)
-    indices = torch.randperm(n).tolist()
-
-    train_size = int(n * train_ratio)
-    val_size = int(n * (1 - train_ratio) / 2)
-
-    train_indices = indices[:train_size]
-    val_indices = indices[train_size : train_size + val_size]
-    test_indices = indices[train_size + val_size :]
-
-    train_data = result_data.filter(pl.col("index").is_in(train_indices))
-    val_data = result_data.filter(pl.col("index").is_in(val_indices))
-    test_data = result_data.filter(pl.col("index").is_in(test_indices))
-
-    # Log info
     log.info(f"Train set: {len(train_data)} samples")
     log.info(f"Validation set: {len(val_data)} samples")
     log.info(f"Test set: {len(test_data)} samples")
 
-    # Save data
     os.makedirs(output_dir, exist_ok=True)
     for name, data in [("train", train_data), ("val", val_data), ("test", test_data)]:
-        with open(os.path.join(output_dir, f"{name}.pkl"), "wb") as f:
-            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+        torch.save(data, os.path.join(output_dir, f"{name}.pt"))
 
     log.info(f"Data preparation completed and saved to: {output_dir}")
 
 
 if __name__ == "__main__":
+    import argparse
+
     parser = argparse.ArgumentParser(description="Prepare structure data for training")
     parser.add_argument("--input", type=str, required=True, help="Input CSV path")
     parser.add_argument(

@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 from pymatgen.core import Structure
 from pymatgen.analysis.local_env import EconNN
 
@@ -27,7 +28,8 @@ def structure_to_quotient_graph(structure: Structure):
     for i, z in enumerate(atomic_numbers):
         node_features[i, z - 1] = 1
 
-    frac_coords = torch.tensor([site.frac_coords for site in sites], dtype=torch.float)
+    frac_coords = np.array([site.frac_coords for site in sites], dtype=np.float32)
+    frac_coords = torch.from_numpy(frac_coords)
     node_features = torch.cat([node_features, frac_coords], dim=1)
 
     edge_index = []

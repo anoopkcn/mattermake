@@ -1,4 +1,4 @@
-from src.data.prepare_data import prepare_slices_data
+from src.data.prepare_slices_data import prepare_slices_data
 from src.utils.pylogger import get_pylogger
 from src.utils.utils import extras
 

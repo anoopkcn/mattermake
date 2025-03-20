@@ -1,0 +1,15 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - paths: default
+  - hydra: default
+
+task_name: "data_preparation_structure"
+
+input_path: "/p/project1/hai_solaihack/datasets/alex_mp_20/alex_mp_20/train.csv"
+output_dir: "${paths.data_dir}/structures"
+
+train_ratio: 0.8
+data_limit_factor: 0.3
+seed: 42

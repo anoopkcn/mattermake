@@ -29,7 +29,9 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 log = utils.pylogger.get_pylogger(__name__)
 
 
-@hydra.main(version_base="1.3", config_path="../configs", config_name="generate.yaml")
+@hydra.main(
+    version_base="1.3", config_path="../configs", config_name="generate_slice.yaml"
+)
 def generate(cfg: DictConfig):
     """Generate slices from a trained model using embeddings.
 
@@ -148,10 +150,10 @@ def generate(cfg: DictConfig):
 
             # Only print details for a few samples when evaluating all
             if cfg.get("evaluate_all", False) and global_idx < 5:
-                log.info(f"Sample {global_idx+1} Generated: {decoded_slice}")
+                log.info(f"Sample {global_idx + 1} Generated: {decoded_slice}")
                 if true_slices and global_idx < len(true_slices):
                     log.info(
-                        f"Sample {global_idx+1} Original:  {true_slices[global_idx]}"
+                        f"Sample {global_idx + 1} Original:  {true_slices[global_idx]}"
                     )
                 log.info("---")
             elif not cfg.get("evaluate_all", False):

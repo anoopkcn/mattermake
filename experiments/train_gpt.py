@@ -21,7 +21,7 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 log = utils.pylogger.get_pylogger(__name__)
 
 
-@hydra.main(version_base="1.3", config_path="../configs", config_name="train.yaml")
+@hydra.main(version_base="1.3", config_path="../configs", config_name="train_gpt.yaml")
 def main(cfg: DictConfig) -> Tuple[dict, dict]:
     """Train the model.
 

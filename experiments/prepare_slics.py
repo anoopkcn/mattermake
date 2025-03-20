@@ -20,7 +20,7 @@ log = get_pylogger(__name__)
 
 
 @hydra.main(
-    version_base="1.3", config_path="../configs", config_name="data_preparation"
+    version_base="1.3", config_path="../configs", config_name="data_preparation_slice"
 )
 def main(cfg: DictConfig) -> None:
     """Prepare data for training.

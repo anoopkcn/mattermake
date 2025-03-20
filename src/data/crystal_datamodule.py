@@ -1,38 +1,40 @@
 from typing import Optional
 import torch
+import pickle
+import polars as pl
 from torch_geometric.data import Dataset, Data
 from lightning.pytorch import LightningDataModule
 from torch_geometric.loader import DataLoader
-
-from src.utils.crystal_to_graph import structure_to_quotient_graph
 
 
 class CrystalDataset(Dataset):
     def __init__(
         self,
-        structures,
+        data: pl.DataFrame,
         transform=None,
         pre_transform=None,
     ):
         super().__init__(transform, pre_transform)
-        self.structures = structures
+        self.data = data
 
     def len(self):
-        return len(self.structures)
+        return self.data.shape[0]
 
     def get(self, idx):
-        structure = self.structures[idx]
+        structure = self.data[idx]
 
-        node_features, edge_index, edge_features, cell_params = (
-            structure_to_quotient_graph(structure)
-        )
+        node_features = torch.tensor(structure["node_features"].item())
+        edge_index = torch.tensor(structure["edge_index"].item())
+        edge_features = torch.tensor(structure["edge_features"].item())
+        cell_params = torch.tensor(structure["cell_params"].item())
+        num_nodes = torch.tensor(structure["num_nodes"].item())
 
         data = Data(
             x=node_features,
             edge_index=edge_index,
             edge_attr=edge_features,
             cell_params=cell_params,
-            num_nodes=node_features.size(0),
+            num_nodes=num_nodes,
         )
 
         return data
@@ -64,9 +66,12 @@ class CrystalDataModule(LightningDataModule):
     def setup(self, stage: Optional[str] = None):
         if stage == "fit" or stage is None:
             try:
-                train_data = torch.load(f"{self.data_dir}/train.pt")
-                val_data = torch.load(f"{self.data_dir}/val.pt")
-                test_data = torch.load(f"{self.data_dir}/test.pt")
+                with open(f"{self.data_dir}/train.pkl", "rb") as f:
+                    train_data = pickle.load(f)
+                with open(f"{self.data_dir}/val.pkl", "rb") as f:
+                    val_data = pickle.load(f)
+                with open(f"{self.data_dir}/test.pkl", "rb") as f:
+                    test_data = pickle.load(f)
             except (FileNotFoundError, RuntimeError):
                 import numpy as np
 
@@ -78,9 +83,9 @@ class CrystalDataModule(LightningDataModule):
                     f"{self.data_dir}/test.npy", allow_pickle=True
                 ).item()
 
-            self.data_train = CrystalDataset(train_data["structures"])
-            self.data_val = CrystalDataset(val_data["structures"])
-            self.data_test = CrystalDataset(test_data["structures"])
+            self.data_train = CrystalDataset(train_data)
+            self.data_val = CrystalDataset(val_data)
+            self.data_test = CrystalDataset(test_data)
 
     def train_dataloader(self):
         return DataLoader(

@@ -11,5 +11,5 @@ input_path: "/p/project1/hai_solaihack/datasets/alex_mp_20/alex_mp_20/train.csv"
 output_dir: "${paths.data_dir}/structures"
 
 train_ratio: 0.8
-data_limit_factor: 0.3
+data_limit: 0.2 # 0.2 means 20% of the data
 seed: 42

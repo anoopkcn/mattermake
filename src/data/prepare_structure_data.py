@@ -1,13 +1,44 @@
 import os
 import torch
-import pandas as pl
+import polars as pl
 import argparse
+import pickle
+from typing import Dict, Optional
 
 from pymatgen.core import Structure
-
+from src.utils.crystal_to_graph import structure_to_quotient_graph
 from src.utils.pylogger import get_pylogger
 
 log = get_pylogger(__name__)
+
+
+def parse_cif_to_structure(cif_string: str) -> Optional[Dict]:
+    """Parse CIF string to graph components with error handling."""
+    try:
+        structure = Structure.from_str(cif_string, fmt="cif")
+        return structure_to_quotient_graph(structure)
+    except Exception as e:
+        log.warning(f"Error parsing CIF: {e}")
+        return None
+
+
+def process_batch(cif_strings: list) -> list:
+    """Process a batch of CIF strings sequentially."""
+    results = []
+    for cif_string in cif_strings:
+        result = parse_cif_to_structure(cif_string)
+        if result is not None:
+            node_features, edge_index, edge_features, cell_params = result
+            results.append(
+                {
+                    "node_features": node_features,
+                    "edge_index": edge_index,
+                    "edge_features": edge_features,
+                    "cell_params": cell_params,
+                    "num_nodes": node_features.size(0),
+                }
+            )
+    return results
 
 
 def prepare_structure_data(
@@ -16,109 +47,93 @@ def prepare_structure_data(
     train_ratio: float = 0.8,
     data_limit: float = 1.0,
     seed: int = 42,
+    batch_size: int = 1000,
 ):
-    log.info(f"Loading data from {input_path}")
-    val_ratio = (1.0 - train_ratio) / 2.0
-    test_ratio = val_ratio
-
-    log.info(
-        f"Train ratio: {train_ratio:.1%}, Validation ratio: {val_ratio:.1%}, Test ratio: {test_ratio:.1%}"
-    )
-
-    data = pl.read_csv(input_path, null_values=["nan"])
-    data["structures"] = data["cif"].apply(lambda x: Structure.from_str(x, "cif"))
-
-    data = {"structures": data["structures"]}
+    data = pl.scan_csv(input_path, null_values=["nan"]).select(["material_id", "cif"])
 
     if data_limit < 1.0:
-        total_samples = len(data["structures"])
+        total_samples = data.collect().shape[0]
         limit_samples = int(total_samples * data_limit)
         log.info(
-            f"Limiting data to {data_limit:.1%} of original size: {limit_samples}/{total_samples} samples"
+            f"Limiting data to {data_limit:.1%}: {limit_samples}/{total_samples} samples"
         )
+        data = data.limit(limit_samples)
 
-        data["structures"] = data["structures"][:limit_samples]
+    data = data.collect()
 
-    log.info(f"Total number of samples after limiting: {len(data['structures'])}")
+    # Process data in batches
+    structures = []
+    for i in range(0, len(data), batch_size):
+        batch = data[i : i + batch_size]
+        batch_results = process_batch(batch["cif"].to_list())
+        structures.extend(batch_results)
 
+    # Create result dataframe efficiently
+    result_data = pl.DataFrame(
+        {
+            "material_id": data["material_id"],
+            "structures": structures,
+            "node_features": [s["node_features"] for s in structures],
+            "edge_index": [s["edge_index"] for s in structures],
+            "edge_features": [s["edge_features"] for s in structures],
+            "cell_params": [s["cell_params"] for s in structures],
+            "num_nodes": [s["num_nodes"] for s in structures],
+        }
+    )
+
+    # Split data
     torch.manual_seed(seed)
+    n = len(result_data)
+    indices = torch.randperm(n).tolist()
 
-    indices = torch.randperm(len(data["structures"]))
-    data["structures"] = [data["structures"][i.item()] for i in indices]
+    train_size = int(n * train_ratio)
+    val_size = int(n * (1 - train_ratio) / 2)
 
-    n = len(data["structures"])
-    train_split_idx = int(n * train_ratio)
-    val_split_idx = train_split_idx + int(n * val_ratio)
-    test_split_idx = val_split_idx + int(n * test_ratio)
+    train_indices = indices[:train_size]
+    val_indices = indices[train_size : train_size + val_size]
+    test_indices = indices[train_size + val_size :]
 
-    train_structures = torch.stack(
-        [structure for structure in data["structures"][:train_split_idx]]
-    )
-    val_structures = torch.stack(
-        [structure for structure in data["structures"][train_split_idx:val_split_idx]]
-    )
+    train_data = result_data.filter(pl.col("index").is_in(train_indices))
+    val_data = result_data.filter(pl.col("index").is_in(val_indices))
+    test_data = result_data.filter(pl.col("index").is_in(test_indices))
 
-    test_structures = torch.stack(
-        [structure for structure in data["structures"][val_split_idx:test_split_idx]]
-    )
+    # Log info
+    log.info(f"Train set: {len(train_data)} samples")
+    log.info(f"Validation set: {len(val_data)} samples")
+    log.info(f"Test set: {len(test_data)} samples")
 
-    log.info(f"Train set: {len(train_structures)} samples")
-    log.info(f"Validation set: {len(val_structures)} samples")
-    log.info(f"Test set: {len(test_structures)} samples")
-
-    log.info("Encoding slices...")
-
+    # Save data
     os.makedirs(output_dir, exist_ok=True)
+    for name, data in [("train", train_data), ("val", val_data), ("test", test_data)]:
+        with open(os.path.join(output_dir, f"{name}.pkl"), "wb") as f:
+            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
 
-    train_data = {"structures": train_structures}
-    val_data = {"structures": val_structures}
-    test_data = {"structures": test_structures}
-
-    train_path = os.path.join(output_dir, "train.pt")
-    val_path = os.path.join(output_dir, "val.pt")
-    test_path = os.path.join(output_dir, "test.pt")
-
-    torch.save(train_data, train_path)
-    torch.save(val_data, val_path)
-    torch.save(test_data, test_path)
-
-    log.info("Data preparation completed and saved to:")
-    log.info(f"- Train data: {train_path}")
-    log.info(f"- Validation data: {val_path}")
-    log.info(f"- Test data: {test_path}")
+    log.info(f"Data preparation completed and saved to: {output_dir}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Prepare slice data for training")
+    parser = argparse.ArgumentParser(description="Prepare structure data for training")
+    parser.add_argument("--input", type=str, required=True, help="Input CSV path")
     parser.add_argument(
-        "--input",
-        type=str,
-        required=True,
-        help="Path to the input pickle file with embeddings and slices",
+        "--output", type=str, default="data/structures", help="Output directory"
     )
     parser.add_argument(
-        "--output",
-        type=str,
-        default="data/slice",
-        help="Directory to save the processed data",
+        "--train-ratio", type=float, default=0.8, help="Training data ratio"
     )
     parser.add_argument(
-        "--train-ratio",
-        type=float,
-        default=0.9,
-        help="Ratio of data to use for training (rest for validation)",
+        "--data-limit", type=float, default=1.0, help="Data limit factor"
     )
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument(
-        "--data-limit",
-        type=float,
-        default=1.0,
-        help="Factor to limit the amount of data used (1.0 means use all data, 0.2 means use 20%)",
-    )
-    parser.add_argument(
-        "--seed", type=int, default=42, help="Random seed for reproducibility"
+        "--batch-size", type=int, default=1000, help="Processing batch size"
     )
 
     args = parser.parse_args()
     prepare_structure_data(
-        args.input, args.output, args.train_ratio, args.data_limit, args.seed
+        args.input,
+        args.output,
+        args.train_ratio,
+        args.data_limit,
+        args.seed,
+        args.batch_size,
     )

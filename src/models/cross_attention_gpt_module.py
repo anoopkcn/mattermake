@@ -2,9 +2,12 @@ import math
 import torch
 from lightning.pytorch import LightningModule
 
-from src.models.components.cross_attention_gpt import CrossAttentionGPT, CrossAttentionGPTConfig
-from src.utils.vocab import decode_slice, stoi
-from src.utils import pylogger
+from models.components.cross_attention_gpt import (
+    CrossAttentionGPT,
+    CrossAttentionGPTConfig,
+)
+from utils.vocab import decode_slice, stoi
+from utils import pylogger
 
 
 class CrossAttentionGPTModule(LightningModule):
@@ -53,7 +56,14 @@ class CrossAttentionGPTModule(LightningModule):
         targets = batch["target_ids"]
 
         logits, loss = self.model(input_ids, targets, embeddings=embeddings)
-        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log(
+            "train_loss",
+            loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
+        )
         return loss
 
     def validation_step(self, batch, batch_idx):

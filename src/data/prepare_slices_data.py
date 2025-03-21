@@ -4,8 +4,8 @@ import pandas as pd
 import pickle
 import argparse
 
-from src.utils.vocab import vocab, encode_slice, stoi, itos
-from src.utils.pylogger import get_pylogger
+from utils.vocab import vocab, encode_slice, stoi, itos
+from utils.pylogger import get_pylogger
 
 log = get_pylogger(__name__)
 

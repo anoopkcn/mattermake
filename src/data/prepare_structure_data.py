@@ -4,9 +4,9 @@ from typing import Optional, List, Tuple
 import csv
 
 from pymatgen.core import Structure
-from src.utils.crystal_to_graph import structure_to_quotient_graph
-from src.utils.pylogger import get_pylogger
-from src.data.crystal_datamodule import CrystalGraphData
+from utils.crystal_to_graph import structure_to_quotient_graph
+from utils.pylogger import get_pylogger
+from data.crystal_datamodule import CrystalGraphData
 
 log = get_pylogger(__name__)
 

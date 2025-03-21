@@ -1,4 +1,4 @@
-_target_: src.models.gpt_module.GPTModule
+_target_: models.gpt_module.GPTModule
 
 # Model architecture
 n_layer: 48

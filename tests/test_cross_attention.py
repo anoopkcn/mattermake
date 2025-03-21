@@ -1,17 +1,16 @@
 # tests/test_cross_attention.py
 
 import torch
-from src.models.components.cross_attention_gpt import CrossAttentionGPT, CrossAttentionGPTConfig
+from models.components.cross_attention_gpt import (
+    CrossAttentionGPT,
+    CrossAttentionGPTConfig,
+)
+
 
 def test_cross_attention_gpt():
     # Create a small model for testing
     config = CrossAttentionGPTConfig(
-        block_size=128,
-        vocab_size=100,
-        n_layer=2,
-        n_head=4,
-        n_embd=64,
-        embedding_dim=32
+        block_size=128, vocab_size=100, n_layer=2, n_head=4, n_embd=64, embedding_dim=32
     )
 
     model = CrossAttentionGPT(config)
@@ -36,6 +35,7 @@ def test_cross_attention_gpt():
     assert output.shape == (batch_size, 6)  # 1 + 5 new tokens
 
     print("Cross-attention GPT model test passed")
+
 
 if __name__ == "__main__":
     test_cross_attention_gpt()

@@ -1,4 +1,4 @@
-_target_: src.data.slice_datamodule.SliceDataModule
+_target_: data.slice_datamodule.SliceDataModule
 
 data_dir: ${paths.data_dir}/slice
 batch_size: 16

@@ -1,4 +1,4 @@
-_target_: src.models.cross_attention_gpt_module.CrossAttentionGPTModule
+_target_: models.cross_attention_gpt_module.CrossAttentionGPTModule
 
 # Model architecture
 n_layer: 12

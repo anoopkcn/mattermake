@@ -9,7 +9,7 @@ from lightning.pytorch import Trainer, LightningModule, Callback, LightningDataM
 from lightning.pytorch.loggers import Logger
 
 from src import utils
-from src.utils.init import (
+from utils.distributed_init import (
     configure_pytorch,
     init_distributed_mode,
     log_distributed_settings,

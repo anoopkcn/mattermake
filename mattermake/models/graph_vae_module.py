@@ -15,12 +15,14 @@ class GraphVAEModule(LightningModule):
         max_nodes: int = 50,
         learning_rate: float = 1e-3,
         beta: float = 1.0,  # KL divergence weight
+        train_cell_params: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()
 
         self.beta = beta
         self.learning_rate = learning_rate
+        self.train_cell_params = train_cell_params
 
         self.vae = QuotientGraphVAE(
             node_feat_dim=node_feat_dim,
@@ -71,23 +73,30 @@ class GraphVAEModule(LightningModule):
         else:
             edge_feat_loss = torch.tensor(0.0, device=self.device)
 
-        cell_params_true = batch.cell_params
-        cell_params_pred = decoded["cell_params"][0]
+        # Initialize cell_loss (will be 0 if not training cell_params)
+        cell_loss = torch.tensor(0.0, device=self.device)
+        cell_params_true_shape = 0
+        cell_params_pred_shape = 0
 
-        cell_params_true_shape = cell_params_true.shape[0]
-        cell_params_pred_shape = cell_params_pred.shape[0]
+        # Only compute cell loss if train_cell_params is True
+        if self.train_cell_params:
+            cell_params_true = batch.cell_params
+            cell_params_pred = decoded["cell_params"][0]
 
-        if cell_params_pred.shape != cell_params_true.shape:
-            if cell_params_pred.numel() >= cell_params_true.numel():
-                # Take just what we need (first 6 elements)
-                cell_params_pred = cell_params_pred[: cell_params_true.numel()]
-            else:
-                pad_size = cell_params_true.numel() - cell_params_pred.numel()
-                cell_params_pred = torch.cat(
-                    [cell_params_pred, torch.zeros(pad_size, device=self.device)]
-                )
+            cell_params_true_shape = cell_params_true.shape[0]
+            cell_params_pred_shape = cell_params_pred.shape[0]
 
-        cell_loss = F.mse_loss(cell_params_pred, cell_params_true)
+            if cell_params_pred.shape != cell_params_true.shape:
+                if cell_params_pred.numel() >= cell_params_true.numel():
+                    # Take just what we need (first 6 elements)
+                    cell_params_pred = cell_params_pred[: cell_params_true.numel()]
+                else:
+                    pad_size = cell_params_true.numel() - cell_params_pred.numel()
+                    cell_params_pred = torch.cat(
+                        [cell_params_pred, torch.zeros(pad_size, device=self.device)]
+                    )
+
+            cell_loss = F.mse_loss(cell_params_pred, cell_params_true)
 
         kl_loss = (
             -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp(), dim=1).mean()
@@ -102,11 +111,12 @@ class GraphVAEModule(LightningModule):
         else:
             node_count_penalty = torch.tensor(0.0, device=self.device)
 
+        # Only include cell_loss in recon_loss if train_cell_params is True
         recon_loss = (
             node_loss
             + edge_loss
             + edge_feat_loss
-            + cell_loss
+            + (cell_loss if self.train_cell_params else 0.0)
             + 0.1 * node_count_penalty
         )
         total_loss = recon_loss + self.beta * kl_loss
@@ -197,12 +207,15 @@ class GraphVAEModule(LightningModule):
             batch_size=batch.num_nodes,
             sync_dist=True,
         )
-        self.log(
-            "val_cell_loss",
-            loss_dict["cell_loss"],
-            batch_size=batch.num_nodes,
-            sync_dist=True,
-        )
+
+        # Only log cell_loss if we're training cell params
+        if self.train_cell_params:
+            self.log(
+                "val_cell_loss",
+                loss_dict["cell_loss"],
+                batch_size=batch.num_nodes,
+                sync_dist=True,
+            )
 
         self.logger.log_metrics(
             {

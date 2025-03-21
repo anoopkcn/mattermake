@@ -8,8 +8,8 @@ from omegaconf import DictConfig
 from lightning.pytorch import Trainer, LightningModule, Callback, LightningDataModule
 from lightning.pytorch.loggers import Logger
 
-from src import utils
-from utils.distributed_init import (
+from mattermake import utils
+from mattermake.utils.distributed_init import (
     configure_pytorch,
     init_distributed_mode,
     log_distributed_settings,

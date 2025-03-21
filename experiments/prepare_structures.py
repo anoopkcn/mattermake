@@ -1,13 +1,12 @@
-from data.prepare_structure_data import prepare_structure_data
-from utils.pylogger import get_pylogger
-from utils.utils import extras
-
 import hydra
 import rootutils
 from omegaconf import DictConfig
 from lightning.pytorch import seed_everything
 
-from utils.distributed_init import (
+from mattermake.data.prepare_structure_data import prepare_structure_data
+from mattermake.utils.pylogger import get_pylogger
+from mattermake.utils.utils import extras
+from mattermake.utils.distributed_init import (
     configure_pytorch,
     init_distributed_mode,
     log_distributed_settings,

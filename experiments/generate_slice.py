@@ -14,10 +14,10 @@ from omegaconf import DictConfig
 from lightning.pytorch import LightningModule
 import lightning.pytorch as pl
 
-from utils.vocab import decode_slice
+from mattermake.utils.vocab import decode_slice
 
-from src import utils
-from utils.distributed_init import (
+from mattermake import utils
+from mattermake.utils.distributed_init import (
     configure_pytorch,
     init_distributed_mode,
     log_distributed_settings,

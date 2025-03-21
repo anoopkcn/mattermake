@@ -5,19 +5,19 @@ import numpy as np
 from pymatgen.core import Structure
 from pathlib import Path
 
-import polars as pl
+# import polars as pl
 # import matplotlib.pyplot as plt
 
-df = pl.read_csv("~/Downloads/alex_mp_20/alex_mp_20/train.csv", null_values=["nan"])
-print(df.columns)
-print(df.shape)
-df2 = pl.read_csv("~/Downloads/alex_mp_20/alex_mp_20/val.csv", null_values=["nan"])
-print(df2.columns)
-print(df2.shape)
-df2 = df2.select("material_id", "cif")[:10]
-df2.columns
-df2.shape
-df2[0]["material_id"].item()
+# df = pl.read_csv("~/Downloads/alex_mp_20/alex_mp_20/train.csv", null_values=["nan"])
+# print(df.columns)
+# print(df.shape)
+# df2 = pl.read_csv("~/Downloads/alex_mp_20/alex_mp_20/val.csv", null_values=["nan"])
+# print(df2.columns)
+# print(df2.shape)
+# df2 = df2.select("material_id", "cif")[:10]
+# df2.columns
+# df2.shape
+# df2[0]["material_id"].item()
 
 
 def parse_cif_to_structure(cif_string):
@@ -28,14 +28,14 @@ def parse_cif_to_structure(cif_string):
         return None
 
 
-# Create a new column with the structures
-structures = []
-for cif_str in df2["cif"]:
-    structures.append(parse_cif_to_structure(cif_str))
+# # Create a new column with the structures
+# structures = []
+# for cif_str in df2["cif"]:
+#     structures.append(parse_cif_to_structure(cif_str))
 
-# Add the structures as a new column
-df2 = df2.with_columns(pl.Series(name="structure", values=structures))
-df2
+# # Add the structures as a new column
+# df2 = df2.with_columns(pl.Series(name="structure", values=structures))
+# df2
 
 # df_selected = df.select(["material_id", "cif", "dft_band_gap"])
 # # Drop rows with nan or null values

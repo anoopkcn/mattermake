@@ -2,11 +2,11 @@ import os
 import torch
 from typing import Optional, List, Tuple
 import csv
-
 from pymatgen.core import Structure
-from utils.crystal_to_graph import structure_to_quotient_graph
-from utils.pylogger import get_pylogger
-from data.crystal_datamodule import CrystalGraphData
+
+from mattermake.utils.crystal_to_graph import structure_to_quotient_graph
+from mattermake.utils.pylogger import get_pylogger
+from mattermake.data.crystal_datamodule import CrystalGraphData
 
 log = get_pylogger(__name__)
 

@@ -2,12 +2,12 @@ import math
 import torch
 from lightning.pytorch import LightningModule
 
-from models.components.cross_attention_gpt import (
+from mattermake.models.components.cross_attention_gpt import (
     CrossAttentionGPT,
     CrossAttentionGPTConfig,
 )
-from utils.vocab import decode_slice, stoi
-from utils import pylogger
+from mattermake.utils.vocab import decode_slice, stoi
+from mattermake.utils import pylogger
 
 
 class CrossAttentionGPTModule(LightningModule):

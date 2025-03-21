@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from lightning.pytorch import LightningModule
 
-from models.components.graph_vae import QuotientGraphVAE
+from mattermake.models.components.graph_vae import QuotientGraphVAE
 
 
 class GraphVAEModule(LightningModule):

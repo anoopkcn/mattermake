@@ -2,9 +2,9 @@ import math
 import torch
 from lightning.pytorch import LightningModule
 
-from models.components.gpt_model import GPT, GPTConfig
-from utils.vocab import decode_slice, stoi
-from utils import pylogger
+from mattermake.models.components.gpt_model import GPT, GPTConfig
+from mattermake.utils.vocab import decode_slice, stoi
+from mattermake.utils import pylogger
 
 
 class GPTModule(LightningModule):

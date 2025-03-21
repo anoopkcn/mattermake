@@ -1,7 +1,5 @@
-# tests/test_cross_attention.py
-
 import torch
-from models.components.cross_attention_gpt import (
+from mattermake.models.components.cross_attention_gpt import (
     CrossAttentionGPT,
     CrossAttentionGPTConfig,
 )

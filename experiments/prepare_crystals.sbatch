@@ -20,5 +20,5 @@ srun --gres=gpu:4 --nodes=${SLURM_JOB_NUM_NODES} --ntasks-per-node=4 --cpu-bind=
     export PYTHONPATH="${PYTHONPATH}:/p/home/jusers/chandran1/jureca/hai_solaihack/mattermake"
     source /p/project1/hai_solaihack/chandran1/mattermake/.venv/bin/activate
     cd /p/project1/hai_solaihack/chandran1/mattermake/experiments
-    python prepare_structures.py
+    python prepare_crystals.py
 "

@@ -5,7 +5,7 @@ defaults:
   - paths: default
   - hydra: default
 
-task_name: "data_preparation_structure"
+task_name: "data_preparation_crystals"
 
 input_path: "/p/project1/hai_solaihack/datasets/alex_mp_20/alex_mp_20/train.csv"
 output_dir: "${paths.data_dir}/structures"

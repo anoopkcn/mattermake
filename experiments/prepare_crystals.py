@@ -3,7 +3,7 @@ import rootutils
 from omegaconf import DictConfig
 from lightning.pytorch import seed_everything
 
-from mattermake.data.prepare_structure_data import prepare_structure_data
+from mattermake.data.crystal_prepare import prepare_structure_data
 from mattermake.utils.pylogger import get_pylogger
 from mattermake.utils.utils import extras
 from mattermake.utils.distributed_init import (
@@ -21,7 +21,7 @@ log = get_pylogger(__name__)
 @hydra.main(
     version_base="1.3",
     config_path="../configs",
-    config_name="data_preparation_structure",
+    config_name="crystals_prepare",
 )
 def main(cfg: DictConfig) -> None:
     """Prepare data for training.

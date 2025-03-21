@@ -14,7 +14,7 @@ class GraphVAEModule(LightningModule):
         latent_dim: int = 128,
         max_nodes: int = 50,
         learning_rate: float = 1e-3,
-        beta: float = 1.0,  # KL divergence weight
+        beta: float = 0.5,  # KL divergence weight
         train_cell_params: bool = False,
     ):
         super().__init__()
@@ -119,7 +119,12 @@ class GraphVAEModule(LightningModule):
             + (cell_loss if self.train_cell_params else 0.0)
             + 0.1 * node_count_penalty
         )
-        total_loss = recon_loss + self.beta * kl_loss
+        current_epoch = self.current_epoch
+        total_epochs = self.trainer.max_epochs
+        beta_weight = min(
+            1.0, current_epoch / (total_epochs * 0.3)
+        )  # Ramp up over 30% of training
+        total_loss = recon_loss + beta_weight * self.beta * kl_loss
 
         return {
             "loss": total_loss,

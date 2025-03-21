@@ -8,11 +8,18 @@ class QuotientGraphEncoder(nn.Module):
     def __init__(self, node_feat_dim, edge_feat_dim, hidden_dim, latent_dim):
         super().__init__()
 
-        self.node_conv1 = GATConv(node_feat_dim, hidden_dim)
-        self.node_conv2 = GATConv(hidden_dim, hidden_dim)
+        self.node_conv1 = GATConv(node_feat_dim, hidden_dim // 4, heads=4)
+        self.node_conv2 = GATConv(hidden_dim, hidden_dim // 4, heads=4)
+        self.node_conv3 = GATConv(hidden_dim, hidden_dim // 2, heads=2)
 
-        self.edge_embedding = nn.Linear(edge_feat_dim, hidden_dim)
-        self.combined_linear = nn.Linear(hidden_dim * 2, hidden_dim)
+        self.edge_embedding = nn.Sequential(
+            nn.Linear(edge_feat_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+        self.combined_linear1 = nn.Linear(hidden_dim * 2, hidden_dim * 2)
+        self.combined_linear2 = nn.Linear(hidden_dim * 2, hidden_dim)
 
         self.mu = nn.Linear(hidden_dim, latent_dim)
         self.log_var = nn.Linear(hidden_dim, latent_dim)
@@ -20,12 +27,16 @@ class QuotientGraphEncoder(nn.Module):
     def forward(self, node_features, edge_index, edge_features):
         x = self.node_conv1(node_features, edge_index)
         x = F.relu(x)
-        x = F.dropout(x, p=0.3, training=self.training)
+        x = F.dropout(x, p=0.2, training=self.training)
+
         x = self.node_conv2(x, edge_index)
+        x = F.relu(x)
+        x = F.dropout(x, p=0.2, training=self.training)
+
+        x = self.node_conv3(x, edge_index)
         x = F.relu(x)
 
         edge_emb = self.edge_embedding(edge_features)
-        edge_emb = F.relu(edge_emb)
 
         graph_emb = torch.cat(
             [
@@ -35,7 +46,9 @@ class QuotientGraphEncoder(nn.Module):
             dim=1,
         )
 
-        graph_emb = self.combined_linear(graph_emb)
+        graph_emb = self.combined_linear1(graph_emb)
+        graph_emb = F.relu(graph_emb)
+        graph_emb = self.combined_linear2(graph_emb)
         graph_emb = F.relu(graph_emb)
 
         mu = self.mu(graph_emb)
@@ -51,74 +64,89 @@ class QuotientGraphEncoder(nn.Module):
 
 class QuotientGraphDecoder(nn.Module):
     def __init__(
-        self, latent_dim, hidden_dim, node_feat_dim, edge_feat_dim, max_nodes=50
+        self, latent_dim, hidden_dim, node_feat_dim, edge_feat_dim, max_nodes=100
     ):
         super().__init__()
         self.max_nodes = max_nodes
 
-        self.latent_to_hidden = nn.Linear(latent_dim, hidden_dim)
+        self.latent_to_hidden = nn.Sequential(
+            nn.Linear(latent_dim, hidden_dim * 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim * 2, hidden_dim),
+        )
 
-        self.node_hidden = nn.Linear(hidden_dim, hidden_dim)
+        self.node_hidden1 = nn.Linear(hidden_dim, hidden_dim * 2)
+        self.node_hidden2 = nn.Linear(hidden_dim * 2, hidden_dim)
         self.node_features = nn.Linear(hidden_dim, node_feat_dim * max_nodes)
-        self.edge_hidden = nn.Linear(hidden_dim, hidden_dim)
-        # Edge existence prediction (adjacency matrix)
+
+        self.edge_hidden1 = nn.Linear(hidden_dim, hidden_dim * 2)
+        self.edge_hidden2 = nn.Linear(hidden_dim * 2, hidden_dim)
         self.edge_existence = nn.Linear(hidden_dim, max_nodes * max_nodes)
-        # Edge features for existing edges
         self.edge_features = nn.Linear(hidden_dim, edge_feat_dim)
 
-        # Number of nodes prediction
+        self.num_nodes_hidden = nn.Linear(hidden_dim, hidden_dim)
         self.num_nodes = nn.Linear(hidden_dim, max_nodes)
 
-        # Unit cell parameter prediction
-        self.cell_params = nn.Linear(hidden_dim, 6)  # a, b, c, alpha, beta, gamma
+        self.cell_hidden = nn.Linear(hidden_dim, hidden_dim // 2)
+        self.cell_params = nn.Linear(hidden_dim // 2, 6)  # a, b, c, alpha, beta, gamma
 
     def forward(self, z):
-        # Expand from latent space
         h = self.latent_to_hidden(z)
         h = F.relu(h)
 
-        # Generate node features
-        node_h = self.node_hidden(h)
+        node_h = self.node_hidden1(h)
+        node_h = F.relu(node_h)
+        node_h = self.node_hidden2(node_h)
         node_h = F.relu(node_h)
         node_features_flat = self.node_features(node_h)
         node_features = node_features_flat.view(
             -1, self.max_nodes, node_features_flat.size(-1) // self.max_nodes
         )
 
-        # Generate edge existence probabilities (adjacency matrix)
-        edge_h = self.edge_hidden(h)
+        edge_h = self.edge_hidden1(h)
+        edge_h = F.relu(edge_h)
+        edge_h = self.edge_hidden2(edge_h)
         edge_h = F.relu(edge_h)
         edge_logits = self.edge_existence(edge_h)
         edge_logits = edge_logits.view(-1, self.max_nodes, self.max_nodes)
 
-        # Number of nodes prediction
-        num_nodes_logits = self.num_nodes(h)
+        num_nodes_h = self.num_nodes_hidden(h)
+        num_nodes_h = F.relu(num_nodes_h)
+        num_nodes_logits = self.num_nodes(num_nodes_h)
 
-        # Unit cell parameters
-        cell_params = self.cell_params(h)
-
-        # For each edge, predict its features if it exists
-        # This is a simplified version; in practice, we'd need to handle the variable number of edges
-        edge_feature_generator = self.edge_features
+        cell_h = self.cell_hidden(h)
+        cell_h = F.relu(cell_h)
+        cell_params_raw = self.cell_params(cell_h)
 
         return {
             "node_features": node_features,
             "edge_logits": edge_logits,
             "num_nodes_logits": num_nodes_logits,
-            "cell_params": cell_params,
-            "edge_feature_generator": edge_feature_generator,
+            "cell_params": cell_params_raw,
+            "edge_h": h,
+            "edge_feature_generator": self.edge_features,
         }
 
     def generate_edge_features(self, edge_indices, hidden_state):
-        """Generate features for specific edges based on their indices"""
-        # In a real implementation, this would use the edge indices to generate appropriate features
+        """Generate features for specific edges based on their indices."""
         num_edges = edge_indices.size(1)
+        batch_size = hidden_state.size(0)
+        edge_h = self.edge_hidden1(hidden_state)
+        edge_h = F.relu(edge_h)
+        edge_h = self.edge_hidden2(edge_h)
+        edge_h = F.relu(edge_h)
 
-        # Generate a hidden state for each edge
-        edge_h = self.edge_hidden(hidden_state).unsqueeze(1).expand(-1, num_edges, -1)
+        edge_hidden_expanded = edge_h.unsqueeze(1).expand(
+            -1, num_edges, -1
+        )  # [batch_size, num_edges, hidden_dim]
 
-        # Generate edge features
-        edge_features = self.edge_features(edge_h)
+        edge_features = self.edge_features(
+            edge_hidden_expanded
+        )  # [batch_size, num_edges, edge_feat_dim]
+
+        # If batch_size is 1, which is common when processing individual graphs
+        if batch_size == 1:
+            return edge_features.squeeze(0)  # [num_edges, edge_feat_dim]
 
         return edge_features
 

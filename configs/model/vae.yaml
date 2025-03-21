@@ -3,8 +3,8 @@ _target_: mattermake.models.graph_vae_module.GraphVAEModule
 # Model architecture
 node_feat_dim: 103
 edge_feat_dim: 4
-hidden_dim: 256
-latent_dim: 128
-max_nodes: 50
+hidden_dim: 512
+latent_dim: 256
+max_nodes: 100
 learning_rate: 0.0001
 beta: 1.0  # KL divergence weight

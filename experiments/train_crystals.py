@@ -35,6 +35,15 @@ def main(cfg: DictConfig):
     if cfg.get("seed"):
         pl.seed_everything(cfg.seed, workers=True)
 
+    if (
+        isinstance(cfg.trainer.get("strategy"), str)
+        and cfg.trainer.get("strategy") == "ddp"
+    ):
+        cfg.trainer.strategy = {
+            "_target_": "lightning.pytorch.strategies.DDPStrategy",
+            "find_unused_parameters": True,
+        }
+
     log.info(f"Instantiating data module <{cfg.data._target_}>")
     datamodule: LightningDataModule = hydra.utils.instantiate(cfg.data)
 

@@ -1,8 +1,5 @@
 _target_: mattermake.data.crystal_datamodule.CrystalDataModule
 
 data_dir: "${paths.data_dir}/structures"
-train_file: "train.pt"
-val_file: "val.pt"
-test_file: "test.pt"
 batch_size: 32
 num_workers: 4

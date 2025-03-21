@@ -37,5 +37,12 @@ train: True
 # checkpoint to resume training from
 ckpt_path: null
 
-# evaluate on test set
 test: False
+
+callbacks:
+  early_stopping:
+    patience: 20
+    min_delta: 0.001
+
+trainer:
+  max_epochs: 500

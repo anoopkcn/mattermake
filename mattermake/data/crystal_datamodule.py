@@ -70,11 +70,13 @@ class CrystalDataModule(LightningDataModule):
         if stage == "fit" or stage is None:
             try:
                 train_data: List[CrystalGraphData] = torch.load(
-                    f"{self.data_dir}/train.pt"
+                    f"{self.data_dir}/train.pt", weights_only=False
                 )
-                val_data: List[CrystalGraphData] = torch.load(f"{self.data_dir}/val.pt")
+                val_data: List[CrystalGraphData] = torch.load(
+                    f"{self.data_dir}/val.pt", weights_only=False
+                )
                 test_data: List[CrystalGraphData] = torch.load(
-                    f"{self.data_dir}/test.pt"
+                    f"{self.data_dir}/test.pt", weights_only=False
                 )
 
                 self.data_train = CrystalDataset(train_data)

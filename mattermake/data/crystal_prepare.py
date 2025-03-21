@@ -3,12 +3,14 @@ import torch
 from typing import Optional, List, Tuple
 import csv
 from pymatgen.core import Structure
+from torch.serialization import add_safe_globals
 
 from mattermake.utils.crystal_to_graph import structure_to_quotient_graph
 from mattermake.utils.pylogger import get_pylogger
 from mattermake.data.crystal_datamodule import CrystalGraphData
 
 log = get_pylogger(__name__)
+add_safe_globals([CrystalGraphData])
 
 
 def parse_cif_to_structure(

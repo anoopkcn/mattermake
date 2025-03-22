@@ -20,5 +20,5 @@ srun --gres=gpu:4 --nodes=${SLURM_JOB_NUM_NODES} --ntasks-per-node=4 --cpu-bind=
     export PYTHONPATH=''
     source /p/project1/hai_solaihack/chandran1/mattermake/.venv/bin/activate
     cd /p/project1/hai_solaihack/chandran1/mattermake/experiments
-    python train_crystals.py trainer.max_epochs=300 trainer.num_nodes=$SLURM_JOB_NUM_NODES
+    python train_crystals.py trainer.max_epochs=500 trainer.num_nodes=$SLURM_JOB_NUM_NODES
 "

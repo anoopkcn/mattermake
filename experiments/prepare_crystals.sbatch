@@ -2,7 +2,7 @@
 #SBATCH --account=westai0036
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
-#SBATCH --time=2:00:00
+#SBATCH --time=12:00:00
 #SBATCH --partition=dc-hwai
 #SBATCH --output=/p/project1/hai_solaihack/chandran1/mattermake/experiments/prep_structure_%j.out
 #SBATCH --error=/p/project1/hai_solaihack/chandran1/mattermake/experiments/prep_structure_%j.err

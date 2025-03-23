@@ -41,13 +41,33 @@ class GraphVAEModule(LightningModule):
 
         return decoded, mu, log_var
 
+    def periodic_mse_loss(self, pred_coords, true_coords):
+        """
+        Calculate MSE loss for fractional coordinates with periodic boundary conditions
+        """
+        diff = pred_coords - true_coords
+
+        # Apply periodic boundary conditions (values should be in [0,1])
+        diff = torch.where(diff > 0.5, diff - 1.0, diff)
+        diff = torch.where(diff < -0.5, diff + 1.0, diff)
+
+        return torch.mean(diff**2)
+
     def compute_loss(self, batch, decoded, mu, log_var):
-        node_features_true = batch.x
         max_nodes = self.vae.decoder.max_nodes
         num_nodes_to_use = min(batch.num_nodes, max_nodes)
-        node_features_true_trunc = node_features_true[:num_nodes_to_use]
+
+        node_features_true = batch.x
+        atom_types_true = node_features_true[:num_nodes_to_use, :100]
+        coords_true = node_features_true[:num_nodes_to_use, -3:]
         node_features_pred = decoded["node_features"][0, :num_nodes_to_use]
-        node_loss = F.mse_loss(node_features_pred, node_features_true_trunc)
+        atom_types_pred = node_features_pred[:, :100]
+        coords_pred = node_features_pred[:, -3:]
+        atom_type_loss = F.cross_entropy(
+            atom_types_pred, torch.argmax(atom_types_true, dim=1)
+        )
+        coord_loss = self.periodic_mse_loss(coords_pred, coords_true)
+        node_loss = atom_type_loss + coord_loss
 
         adj_true = torch.zeros(num_nodes_to_use, num_nodes_to_use, device=self.device)
 

@@ -1,58 +1,129 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GATConv
+from torch_geometric.nn import GATv2Conv
+
+
+class NodeEncoder(nn.Module):
+    def __init__(self, num_elements=100, coord_dim=3, embedding_dim=64, hidden_dim=128):
+        super().__init__()
+
+        self.element_embedding = nn.Embedding(num_elements, embedding_dim)
+
+        self.coord_encoder = nn.Sequential(
+            nn.Linear(coord_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, embedding_dim),
+        )
+
+        self.node_combiner = nn.Sequential(
+            nn.Linear(embedding_dim * 2, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.SiLU(),
+        )
+
+    def forward(self, atomic_numbers, frac_coords):
+        element_idx = torch.clamp(atomic_numbers - 1, min=0, max=99)
+
+        element_features = self.element_embedding(element_idx)
+
+        coord_features = self.coord_encoder(frac_coords)
+
+        combined = torch.cat([element_features, coord_features], dim=-1)
+        node_features = self.node_combiner(combined)
+
+        return node_features
+
+
+class EdgeEncoder(nn.Module):
+    def __init__(self, edge_feat_dim=4, hidden_dim=128, embedding_dim=64):
+        super().__init__()
+
+        self.distance_encoder = nn.Sequential(
+            nn.Linear(1, hidden_dim // 2),
+            nn.SiLU(),
+            nn.Linear(hidden_dim // 2, embedding_dim // 2),
+        )
+
+        self.period_encoder = nn.Sequential(
+            nn.Linear(3, hidden_dim // 2),
+            nn.SiLU(),
+            nn.Linear(hidden_dim // 2, embedding_dim // 2),
+        )
+
+        self.edge_combiner = nn.Sequential(
+            nn.Linear(embedding_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.SiLU()
+        )
+
+    def forward(self, edge_features):
+        distances = edge_features[:, 0:1]
+        periodicity = edge_features[:, 1:4]
+
+        dist_embedding = self.distance_encoder(distances)
+        period_embedding = self.period_encoder(periodicity)
+
+        combined = torch.cat([dist_embedding, period_embedding], dim=-1)
+        edge_embedding = self.edge_combiner(combined)
+
+        return edge_embedding
 
 
 class QuotientGraphEncoder(nn.Module):
-    def __init__(self, node_feat_dim, edge_feat_dim, hidden_dim, latent_dim):
+    def __init__(
+        self, node_feat_dim=103, edge_feat_dim=4, hidden_dim=256, latent_dim=128
+    ):
         super().__init__()
 
-        self.node_conv1 = GATConv(node_feat_dim, hidden_dim // 4, heads=4)
-        self.node_conv2 = GATConv(hidden_dim, hidden_dim // 4, heads=4)
-        # self.node_conv3 = GATConv(hidden_dim, hidden_dim // 2, heads=2)
-
-        self.edge_embedding = nn.Sequential(
-            nn.Linear(edge_feat_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
+        self.node_encoder = NodeEncoder(
+            num_elements=100, coord_dim=3, embedding_dim=64, hidden_dim=hidden_dim
         )
 
-        self.combined_linear1 = nn.Linear(hidden_dim * 2, hidden_dim * 2)
-        self.combined_linear2 = nn.Linear(hidden_dim * 2, hidden_dim)
+        self.edge_encoder = EdgeEncoder(
+            edge_feat_dim=edge_feat_dim, hidden_dim=hidden_dim, embedding_dim=64
+        )
+
+        self.conv1 = GATv2Conv(
+            hidden_dim, hidden_dim // 4, heads=4, edge_dim=hidden_dim
+        )
+        self.conv2 = GATv2Conv(
+            hidden_dim, hidden_dim // 4, heads=4, edge_dim=hidden_dim
+        )
+        self.conv3 = GATv2Conv(
+            hidden_dim, hidden_dim // 2, heads=2, edge_dim=hidden_dim
+        )
+
+        self.final_project = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.SiLU(),
+        )
 
         self.mu = nn.Linear(hidden_dim, latent_dim)
         self.log_var = nn.Linear(hidden_dim, latent_dim)
 
     def forward(self, node_features, edge_index, edge_features):
-        x = self.node_conv1(node_features, edge_index)
-        x = F.relu(x)
+        atom_types = torch.argmax(node_features[:, :100], dim=1) + 1
+        frac_coords = node_features[:, -3:]
+
+        x = self.node_encoder(atom_types, frac_coords)
+        edge_attr = self.edge_encoder(edge_features)
+
+        x = F.relu(self.conv1(x, edge_index, edge_attr=edge_attr))
         x = F.dropout(x, p=0.2, training=self.training)
 
-        x = self.node_conv2(x, edge_index)
-        x = F.relu(x)
-        # x = F.dropout(x, p=0.2, training=self.training)
+        x = F.relu(self.conv2(x, edge_index, edge_attr=edge_attr))
+        x = F.dropout(x, p=0.2, training=self.training)
 
-        # x = self.node_conv3(x, edge_index)
-        # x = F.relu(x)
+        x = F.relu(self.conv3(x, edge_index, edge_attr=edge_attr))
 
-        edge_emb = self.edge_embedding(edge_features)
+        global_x = torch.mean(x, dim=0, keepdim=True)
+        global_edge = torch.mean(edge_attr, dim=0, keepdim=True)
 
-        graph_emb = torch.cat(
-            [
-                torch.mean(x, dim=0, keepdim=True),
-                torch.mean(edge_emb, dim=0, keepdim=True),
-            ],
-            dim=1,
-        )
+        global_repr = torch.cat([global_x, global_edge], dim=1)
+        global_repr = self.final_project(global_repr)
 
-        graph_emb = self.combined_linear1(graph_emb)
-        graph_emb = F.relu(graph_emb)
-        graph_emb = self.combined_linear2(graph_emb)
-        graph_emb = F.relu(graph_emb)
-
-        mu = self.mu(graph_emb)
-        log_var = self.log_var(graph_emb)
+        mu = self.mu(global_repr)
+        log_var = self.log_var(global_repr)
 
         return mu, log_var
 
@@ -64,96 +135,134 @@ class QuotientGraphEncoder(nn.Module):
 
 class QuotientGraphDecoder(nn.Module):
     def __init__(
-        self, latent_dim, hidden_dim, node_feat_dim, edge_feat_dim, max_nodes=100
+        self,
+        latent_dim=128,
+        hidden_dim=256,
+        node_feat_dim=103,
+        edge_feat_dim=4,
+        max_nodes=100,
     ):
         super().__init__()
         self.max_nodes = max_nodes
 
         self.latent_to_hidden = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim * 2),
-            nn.ReLU(),
-            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.Linear(latent_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim * 2),
+            nn.LayerNorm(hidden_dim * 2),
+            nn.SiLU(),
         )
 
-        self.node_hidden1 = nn.Linear(hidden_dim, hidden_dim * 2)
-        self.node_hidden2 = nn.Linear(hidden_dim * 2, hidden_dim)
-        self.node_features = nn.Linear(hidden_dim, node_feat_dim * max_nodes)
+        self.atom_type_decoder = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, 100 * max_nodes),
+        )
 
-        self.edge_hidden1 = nn.Linear(hidden_dim, hidden_dim * 2)
-        self.edge_hidden2 = nn.Linear(hidden_dim * 2, hidden_dim)
-        self.edge_existence = nn.Linear(hidden_dim, max_nodes * max_nodes)
-        self.edge_features = nn.Linear(hidden_dim, edge_feat_dim)
+        self.coord_decoder = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, 3 * max_nodes),
+        )
 
-        self.num_nodes_hidden = nn.Linear(hidden_dim, hidden_dim)
-        self.num_nodes = nn.Linear(hidden_dim, max_nodes)
+        self.edge_existence = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim * 2),
+            nn.SiLU(),
+            nn.Linear(hidden_dim * 2, max_nodes * max_nodes),
+        )
 
-        self.cell_hidden = nn.Linear(hidden_dim, hidden_dim // 2)
-        self.cell_params = nn.Linear(hidden_dim // 2, 6)  # a, b, c, alpha, beta, gamma
+        self.distance_decoder = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, 1),
+            nn.Softplus(),
+        )
+
+        self.periodicity_decoder = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, 3),
+            nn.Tanh(),
+        )
+
+        self.num_nodes = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, max_nodes),
+        )
+
+        self.cell_params = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, 6),
+        )
 
     def forward(self, z):
         h = self.latent_to_hidden(z)
-        h = F.relu(h)
+        batch_size = z.shape[0]
 
-        node_h = self.node_hidden1(h)
-        node_h = F.relu(node_h)
-        node_h = self.node_hidden2(node_h)
-        node_h = F.relu(node_h)
-        node_features_flat = self.node_features(node_h)
-        node_features = node_features_flat.view(
-            -1, self.max_nodes, node_features_flat.size(-1) // self.max_nodes
+        atom_logits = self.atom_type_decoder(h)
+        atom_logits = atom_logits.view(batch_size, self.max_nodes, 100)
+
+        coords = self.coord_decoder(h)
+        coords = coords.view(batch_size, self.max_nodes, 3)
+
+        node_features = torch.cat([atom_logits, coords], dim=-1)
+
+        edge_logits = self.edge_existence(h)
+        edge_logits = edge_logits.view(batch_size, self.max_nodes, self.max_nodes)
+
+        num_nodes_logits = self.num_nodes(h)
+
+        cell_params_raw = self.cell_params(h)
+
+        a, b, c = (
+            F.softplus(cell_params_raw[:, 0:1]),
+            F.softplus(cell_params_raw[:, 1:2]),
+            F.softplus(cell_params_raw[:, 2:3]),
         )
 
-        edge_h = self.edge_hidden1(h)
-        edge_h = F.relu(edge_h)
-        edge_h = self.edge_hidden2(edge_h)
-        edge_h = F.relu(edge_h)
-        edge_logits = self.edge_existence(edge_h)
-        edge_logits = edge_logits.view(-1, self.max_nodes, self.max_nodes)
+        alpha = 30 + 120 * torch.sigmoid(cell_params_raw[:, 3:4])
+        beta = 30 + 120 * torch.sigmoid(cell_params_raw[:, 4:5])
+        gamma = 30 + 120 * torch.sigmoid(cell_params_raw[:, 5:6])
 
-        num_nodes_h = self.num_nodes_hidden(h)
-        num_nodes_h = F.relu(num_nodes_h)
-        num_nodes_logits = self.num_nodes(num_nodes_h)
-
-        cell_h = self.cell_hidden(h)
-        cell_h = F.relu(cell_h)
-        cell_params_raw = self.cell_params(cell_h)
+        cell_params = torch.cat([a, b, c, alpha, beta, gamma], dim=1)
 
         return {
             "node_features": node_features,
             "edge_logits": edge_logits,
             "num_nodes_logits": num_nodes_logits,
-            "cell_params": cell_params_raw,
+            "cell_params": cell_params,
             "edge_h": h,
-            "edge_feature_generator": self.edge_features,
         }
 
     def generate_edge_features(self, edge_indices, hidden_state):
         """Generate features for specific edges based on their indices."""
         num_edges = edge_indices.size(1)
         batch_size = hidden_state.size(0)
-        edge_h = self.edge_hidden1(hidden_state)
-        edge_h = F.relu(edge_h)
-        edge_h = self.edge_hidden2(edge_h)
-        edge_h = F.relu(edge_h)
 
-        edge_hidden_expanded = edge_h.unsqueeze(1).expand(
-            -1, num_edges, -1
-        )  # [batch_size, num_edges, hidden_dim]
+        edge_hidden_expanded = hidden_state.unsqueeze(1).expand(-1, num_edges, -1)
 
-        edge_features = self.edge_features(
-            edge_hidden_expanded
-        )  # [batch_size, num_edges, edge_feat_dim]
+        distances = self.distance_decoder(edge_hidden_expanded)
+        periodicity = self.periodicity_decoder(edge_hidden_expanded)
 
-        # If batch_size is 1, which is common when processing individual graphs
+        edge_features = torch.cat([distances, periodicity], dim=-1)
+
         if batch_size == 1:
-            return edge_features.squeeze(0)  # [num_edges, edge_feat_dim]
+            return edge_features.squeeze(0)
 
         return edge_features
 
 
 class QuotientGraphVAE(nn.Module):
     def __init__(
-        self, node_feat_dim, edge_feat_dim, hidden_dim=128, latent_dim=64, max_nodes=50
+        self,
+        node_feat_dim=103,
+        edge_feat_dim=4,
+        hidden_dim=256,
+        latent_dim=128,
+        max_nodes=100,
     ):
         super().__init__()
 
@@ -182,7 +291,5 @@ class QuotientGraphVAE(nn.Module):
 
     def forward(self, node_features, edge_index, edge_features):
         z, mu, log_var = self.encode(node_features, edge_index, edge_features)
-
         decoded = self.decode(z)
-
         return decoded, mu, log_var

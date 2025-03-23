@@ -10,7 +10,7 @@ class QuotientGraphEncoder(nn.Module):
 
         self.node_conv1 = GATConv(node_feat_dim, hidden_dim // 4, heads=4)
         self.node_conv2 = GATConv(hidden_dim, hidden_dim // 4, heads=4)
-        self.node_conv3 = GATConv(hidden_dim, hidden_dim // 2, heads=2)
+        # self.node_conv3 = GATConv(hidden_dim, hidden_dim // 2, heads=2)
 
         self.edge_embedding = nn.Sequential(
             nn.Linear(edge_feat_dim, hidden_dim),
@@ -31,10 +31,10 @@ class QuotientGraphEncoder(nn.Module):
 
         x = self.node_conv2(x, edge_index)
         x = F.relu(x)
-        x = F.dropout(x, p=0.2, training=self.training)
+        # x = F.dropout(x, p=0.2, training=self.training)
 
-        x = self.node_conv3(x, edge_index)
-        x = F.relu(x)
+        # x = self.node_conv3(x, edge_index)
+        # x = F.relu(x)
 
         edge_emb = self.edge_embedding(edge_features)
 

@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --account=westai0036
-#SBATCH --nodes=1
+#SBATCH --nodes=2
 #SBATCH --ntasks-per-node=4
-#SBATCH --time=6:00:00
+#SBATCH --time=12:00:00
 #SBATCH --partition=dc-hwai
 #SBATCH --output=/p/project1/hai_solaihack/chandran1/mattermake/experiments/train_%j.out
 #SBATCH --error=/p/project1/hai_solaihack/chandran1/mattermake/experiments/train_%j.err
@@ -20,5 +20,5 @@ srun --gres=gpu:4 --nodes=${SLURM_JOB_NUM_NODES} --ntasks-per-node=4 --cpu-bind=
     export PYTHONPATH=''
     source /p/project1/hai_solaihack/chandran1/mattermake/.venv/bin/activate
     cd /p/project1/hai_solaihack/chandran1/mattermake/experiments
-    python train_crystals.py trainer.max_epochs=500 trainer.num_nodes=$SLURM_JOB_NUM_NODES
+    python train_crystals.py trainer.max_epochs=400 trainer.num_nodes=$SLURM_JOB_NUM_NODES
 "

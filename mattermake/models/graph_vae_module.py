@@ -266,17 +266,3 @@ class GraphVAEModule(LightningModule):
             decoded = self.vae.decode(z)
 
         return decoded
-
-    def on_train_start(self):
-        """Log the model size when training starts."""
-        total_params = sum(p.numel() for p in self.parameters())
-        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        self.logger.log_metrics(
-            {
-                "model/total_parameters": total_params,
-                "model/trainable_parameters": trainable_params,
-            }
-        )
-        print(
-            f"Model size: {total_params / 1e6:.2f}M parameters ({trainable_params / 1e6:.2f}M trainable)"
-        )

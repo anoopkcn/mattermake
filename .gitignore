@@ -157,3 +157,4 @@ configs/local/default.yaml
 # uv stuff
 uv.lock
 .env.*
+.DS_Store

@@ -15,6 +15,7 @@ dependencies = [
     "pytest>=8.3.4",
     "rich>=13.9.4",
     "rootutils>=1.0.7",
+    "spglib>=2.6.0",
     "torch>=2.0.0",
     "torch-geometric>=2.6.1",
     "torchmetrics>=0.11.4",

@@ -76,6 +76,12 @@ def main():
     parser.add_argument(
         "--cif_col", type=str, default="cif", help="Column name for CIF strings"
     )
+    parser.add_argument(
+        "--max_structures",
+        type=int,
+        default=None,
+        help="Maximum number of structures to process (for testing)",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -96,6 +102,11 @@ def main():
         raise ValueError(f"CIF column '{args.cif_col}' not found in CSV")
 
     print(f"Found {len(df)} entries in CSV")
+
+    # Limit number of structures if requested
+    if args.max_structures is not None and args.max_structures > 0:
+        print(f"Limiting to {args.max_structures} structures for testing")
+        df = df.head(args.max_structures)
 
     processed_data = []
     for idx, row in tqdm(df.iterrows(), total=len(df), desc="Processing structures"):
@@ -183,3 +194,13 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    # Usage::
+    # python -m mattermake.scripts.prepare_crystal_data \
+    # --input_csv path/to/your/structures.csv \
+    # --output_dir processed_data \
+    # --material_id_col material_id \
+    # --cif_col cif \
+    # --max_seq_length 512 \
+    # --max_structures 1000
+    # --standardize

@@ -163,7 +163,7 @@ def main():
                 "max_sequence_length": args.max_seq_length,
                 "coordinate_precision": args.coord_precision,
                 "lattice_bins": tokenizer.lattice_bins,
-                "vocab_size": tokenizer.vocab_size,
+                # "vocab_size": tokenizer.vocab_size,
             },
             "stats": stats,
         },

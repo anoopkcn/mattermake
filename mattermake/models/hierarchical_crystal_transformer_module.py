@@ -96,11 +96,17 @@ class HierarchicalCrystalTransformerModule(LightningModule):
             sync_dist=True,
         )
 
-        # Log separate losses if available
+        # Log component-specific losses if available
         if "space_group_loss" in outputs:
-            self.log("train_sg_loss", outputs["space_group_loss"], on_epoch=True)
+            self.log("train_sg_loss", outputs["space_group_loss"], on_epoch=True, sync_dist=True)
         if "lattice_loss" in outputs:
-            self.log("train_lattice_loss", outputs["lattice_loss"], on_epoch=True)
+            self.log("train_lattice_loss", outputs["lattice_loss"], on_epoch=True, sync_dist=True)
+        if "element_loss" in outputs:
+            self.log("train_element_loss", outputs["element_loss"], on_epoch=True, sync_dist=True)
+        if "wyckoff_loss" in outputs:
+            self.log("train_wyckoff_loss", outputs["wyckoff_loss"], on_epoch=True, sync_dist=True)
+        if "coordinate_loss" in outputs:
+            self.log("train_coordinate_loss", outputs["coordinate_loss"], on_epoch=True, sync_dist=True)
 
         return loss
 
@@ -110,6 +116,18 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         loss = outputs["loss"]
 
         self.log("val_loss", loss, on_epoch=True, prog_bar=True, sync_dist=True)
+        
+        # Log component-specific validation losses if available
+        if "space_group_loss" in outputs:
+            self.log("val_sg_loss", outputs["space_group_loss"], on_epoch=True, sync_dist=True)
+        if "lattice_loss" in outputs:
+            self.log("val_lattice_loss", outputs["lattice_loss"], on_epoch=True, sync_dist=True)
+        if "element_loss" in outputs:
+            self.log("val_element_loss", outputs["element_loss"], on_epoch=True, sync_dist=True)
+        if "wyckoff_loss" in outputs:
+            self.log("val_wyckoff_loss", outputs["wyckoff_loss"], on_epoch=True, sync_dist=True)
+        if "coordinate_loss" in outputs:
+            self.log("val_coordinate_loss", outputs["coordinate_loss"], on_epoch=True, sync_dist=True)
 
         # Calculate token-level accuracy
         logits = outputs["logits"]
@@ -171,6 +189,25 @@ class HierarchicalCrystalTransformerModule(LightningModule):
             atom_correct = ((preds == shift_labels) & atom_mask).sum().float()
             atom_accuracy = atom_correct / (atom_mask.sum().float() + 1e-8)
             self.log("val_atom_accuracy", atom_accuracy, on_epoch=True)
+            
+        # Break down atom accuracy into element, Wyckoff, and coordinate accuracies
+        element_mask = (shift_segments == self.model.config.SEGMENT_ELEMENT) & valid_mask
+        if element_mask.sum() > 0:
+            element_correct = ((preds == shift_labels) & element_mask).sum().float()
+            element_accuracy = element_correct / (element_mask.sum().float() + 1e-8)
+            self.log("val_element_accuracy", element_accuracy, on_epoch=True)
+            
+        wyckoff_mask = (shift_segments == self.model.config.SEGMENT_WYCKOFF) & valid_mask
+        if wyckoff_mask.sum() > 0:
+            wyckoff_correct = ((preds == shift_labels) & wyckoff_mask).sum().float()
+            wyckoff_accuracy = wyckoff_correct / (wyckoff_mask.sum().float() + 1e-8)
+            self.log("val_wyckoff_accuracy", wyckoff_accuracy, on_epoch=True)
+            
+        coordinate_mask = (shift_segments == self.model.config.SEGMENT_COORDINATE) & valid_mask
+        if coordinate_mask.sum() > 0:
+            coordinate_correct = ((preds == shift_labels) & coordinate_mask).sum().float()
+            coordinate_accuracy = coordinate_correct / (coordinate_mask.sum().float() + 1e-8)
+            self.log("val_coordinate_accuracy", coordinate_accuracy, on_epoch=True)
 
         return loss
 
@@ -293,6 +330,7 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         top_k: Optional[int] = 40,
         top_p: Optional[float] = 0.9,
         num_return_sequences: int = 1,
+        use_continuous_predictions: bool = True,
         **kwargs,
     ) -> List[Dict[str, Any]]:
         """
@@ -355,6 +393,7 @@ class HierarchicalCrystalTransformerModule(LightningModule):
                 repetition_penalty=1.2,
                 eos_token_id=1,  # Assuming EOS token is 1
                 pad_token_id=2,  # Assuming PAD token is 2
+                use_continuous_predictions=use_continuous_predictions,
             )
 
         # Parse generated sequences
@@ -362,25 +401,70 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         for i in range(outputs["sequences"].size(0)):
             seq = outputs["sequences"][i].cpu().tolist()
             segments = outputs["segment_ids"][i].cpu().tolist()
+            
+            # Get continuous predictions if available
+            continuous_data = {}
+            if use_continuous_predictions:
+                # Extract continuous lattice parameters if available
+                if "continuous_lattice_lengths" in outputs and "continuous_lattice_angles" in outputs:
+                    # Get the values for this sequence
+                    lengths = outputs["continuous_lattice_lengths"][i].cpu()
+                    angles = outputs["continuous_lattice_angles"][i].cpu()
+                    continuous_data["lattice_params"] = {
+                        "lengths": lengths,
+                        "angles": angles
+                    }
+                
+                # Extract continuous fractional coordinates if available
+                if "continuous_fractional_coords" in outputs:
+                    coords = outputs["continuous_fractional_coords"][i].cpu()
+                    continuous_data["fractional_coords"] = coords
 
             # Decode to structure (using a helper function, implementation depends on tokenizer)
             if hasattr(self, "decode_to_structure"):
-                structure = self.decode_to_structure(seq, segments)
+                structure = self.decode_to_structure(seq, segments, continuous_data=continuous_data)
             else:
                 # Basic decoding
-                structure = self._basic_structure_decoding(seq, segments)
+                structure = self._basic_structure_decoding(seq, segments, continuous_data=continuous_data)
 
             generated_structures.append(structure)
 
         return generated_structures
 
-    def _basic_structure_decoding(self, sequence, segments):
-        """Basic decoding of token sequence to structure representation"""
+    def _basic_structure_decoding(self, sequence, segments, continuous_data=None):
+        """Basic decoding of token sequence to structure representation
+        
+        Args:
+            sequence: List of token IDs
+            segments: List of segment IDs
+            continuous_data: Optional dictionary containing continuous predictions
+                             for lattice parameters and fractional coordinates
+        """
         # Initialize components
         composition = {}
         space_group = None
         lattice_params = []
         atoms = []
+        
+        # Use continuous lattice parameters if available
+        has_continuous_lattice = False
+        has_continuous_coords = False
+        
+        if continuous_data and "lattice_params" in continuous_data:
+            lattice_data = continuous_data["lattice_params"]
+            if "lengths" in lattice_data and "angles" in lattice_data:
+                # Use the predicted continuous values
+                if isinstance(lattice_data["lengths"], torch.Tensor) and lattice_data["lengths"].numel() >= 3:
+                    # Extract a, b, c from lengths tensor
+                    a, b, c = lattice_data["lengths"][:3].tolist()
+                    lattice_params.extend([a, b, c])
+                    has_continuous_lattice = True
+                
+                if isinstance(lattice_data["angles"], torch.Tensor) and lattice_data["angles"].numel() >= 3:
+                    # Extract alpha, beta, gamma from angles tensor
+                    alpha, beta, gamma = lattice_data["angles"][:3].tolist()
+                    lattice_params.extend([alpha, beta, gamma])
+                    has_continuous_lattice = True
 
         # Track current atom being processed
         current_element = None
@@ -473,8 +557,27 @@ class HierarchicalCrystalTransformerModule(LightningModule):
                     except ValueError:
                         pass
 
-        # Add the last atom if it exists
-        if current_element is not None and len(current_coords) > 0:
+        # Use continuous fractional coordinates if available
+        # This implementation simplifies the coordinate handling and would need to be
+        # expanded in a real application to properly align atoms and coordinates
+        if continuous_data and "fractional_coords" in continuous_data:
+            coords_tensor = continuous_data["fractional_coords"]
+            if isinstance(coords_tensor, torch.Tensor) and coords_tensor.size(-1) == 3:
+                # We have proper coordinate predictions (num_atoms, 3)
+                has_continuous_coords = True
+                # Update atoms with continuous coordinates if we have both atoms and coordinates
+                if len(atoms) > 0 and coords_tensor.size(0) > 0:
+                    # Limit to the number of atoms we have
+                    num_atoms = min(len(atoms), coords_tensor.size(0))
+                    for i in range(num_atoms):
+                        # Convert tensor coordinates to list
+                        atoms[i]["coords"] = coords_tensor[i].tolist()
+                    
+                    # If we have more predicted coordinates than atoms, we could
+                    # potentially create new atoms, but that would require element type predictions
+        
+        # Add the last atom if it exists and we're not using continuous coordinates
+        if not has_continuous_coords and current_element is not None and len(current_coords) > 0:
             atoms.append(
                 {
                     "element": current_element,
@@ -491,6 +594,8 @@ class HierarchicalCrystalTransformerModule(LightningModule):
             "space_group": space_group,
             "lattice_params": lattice_params,
             "atoms": atoms,
+            "used_continuous_lattice": has_continuous_lattice,
+            "used_continuous_coords": has_continuous_coords,
         }
 
         # Try to build pymatgen structure if possible

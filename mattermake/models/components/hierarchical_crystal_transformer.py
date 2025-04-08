@@ -242,6 +242,43 @@ class CrossAttentionLayer(nn.Module):
         return hidden_states + self.dropout(context_output)
 
 
+def bound_lattice_lengths(raw_lengths):
+    """Convert raw network outputs to realistic lattice length parameters (a, b, c)
+    
+    Args:
+        raw_lengths: Raw values from the network
+        
+    Returns:
+        Bounded lattice length values between 2 and 50 Å
+    """
+    # Use sigmoid and scale to appropriate range (2-50 Å)
+    return 2.0 + 48.0 * torch.sigmoid(raw_lengths)
+
+def bound_lattice_angles(raw_angles):
+    """Convert raw network outputs to realistic lattice angle parameters (alpha, beta, gamma)
+    
+    Args:
+        raw_angles: Raw values from the network
+        
+    Returns:
+        Bounded lattice angle values between 30 and 150 degrees
+    """
+    # Use sigmoid and scale to appropriate range (30-150 degrees)
+    return 30.0 + 120.0 * torch.sigmoid(raw_angles)
+
+def bound_fractional_coords(raw_coords):
+    """Convert raw network outputs to fractional coordinates (x, y, z)
+    
+    Args:
+        raw_coords: Raw values from the network
+        
+    Returns:
+        Bounded fractional coordinates between 0 and 1
+    """
+    # Use sigmoid to bound between 0 and 1
+    return torch.sigmoid(raw_coords)
+
+
 class HierarchicalCrystalTransformer(nn.Module):
     """Hierarchical transformer for coarse-to-fine crystal structure generation"""
 
@@ -300,6 +337,8 @@ class HierarchicalCrystalTransformer(nn.Module):
 
         # Specialized prediction heads for different token types
         self.space_group_head = nn.Linear(config.hidden_size, 230)  # 230 space groups
+        
+        # Discrete prediction heads (original approach)
         self.lattice_param_head = nn.Linear(
             config.hidden_size, 6
         )  # 6 lattice parameters
@@ -309,6 +348,31 @@ class HierarchicalCrystalTransformer(nn.Module):
         self.element_head = nn.Linear(
             config.hidden_size, 95
         )  # ~95 elements commonly found in crystals
+        self.coordinate_head = nn.Linear(
+            config.hidden_size, 10**config.coordinate_embedding_dim
+        )  # For fractional coordinates
+        
+        # Continuous prediction heads (new approach)
+        # Lattice length parameters (a, b, c) typically 2-50 Å
+        self.lattice_length_head = nn.Sequential(
+            nn.Linear(config.hidden_size, config.hidden_size // 2),
+            nn.SiLU(),
+            nn.Linear(config.hidden_size // 2, 3),  # 3 lengths: a, b, c
+        )
+        
+        # Lattice angle parameters (alpha, beta, gamma) typically 30-150 degrees
+        self.lattice_angle_head = nn.Sequential(
+            nn.Linear(config.hidden_size, config.hidden_size // 2),
+            nn.SiLU(),
+            nn.Linear(config.hidden_size // 2, 3),  # 3 angles: alpha, beta, gamma
+        )
+        
+        # Fractional coordinates (x, y, z) between 0 and 1
+        self.fractional_coord_head = nn.Sequential(
+            nn.Linear(config.hidden_size, config.hidden_size // 2),
+            nn.SiLU(),
+            nn.Linear(config.hidden_size // 2, 3),  # 3 coordinates: x, y, z
+        )
 
         # Keep track of which modules are active (for curriculum learning)
         self.active_modules = ["composition", "space_group", "lattice", "atoms"]
@@ -332,6 +396,19 @@ class HierarchicalCrystalTransformer(nn.Module):
     def set_active_modules(self, module_list):
         """Set which modules are active (for curriculum learning)"""
         self.active_modules = module_list
+        
+    def set_ground_truth_values(self, lattice_params=None, fractional_coords=None):
+        """Set ground truth values for continuous prediction regression loss
+        
+        Args:
+            lattice_params: Dictionary with 'lengths' and 'angles' tensors for lattice parameters
+            fractional_coords: Dictionary with 'fractional_coords' tensor of shape [num_atoms, 3]
+        """
+        if lattice_params is not None:
+            self._lattice_ground_truth = lattice_params
+        
+        if fractional_coords is not None:
+            self._coordinate_ground_truth = fractional_coords
 
     def get_position_ids(self, input_ids):
         """Generate position IDs based on input sequence"""
@@ -515,16 +592,84 @@ class HierarchicalCrystalTransformer(nn.Module):
                 if sg_hidden.size(0) > 0:
                     sg_logits = self.space_group_head(sg_hidden)
                     outputs["space_group_logits"] = sg_logits
-                    # We would need space group labels to compute this loss
-                    # outputs["space_group_loss"] = ...
+
+                    space_group_labels = None
+                    if labels is not None:
+                        space_group_indices = (
+                            (segment_ids == self.config.SEGMENT_SPACE_GROUP)
+                            .nonzero()
+                            .squeeze(-1)
+                        )
+                        if space_group_indices.size(0) > 0:
+                            space_group_labels = torch.gather(
+                                labels, 1, space_group_indices.unsqueeze(1)
+                            ).squeeze(1)
+                            space_group_labels = space_group_labels[
+                                space_group_labels != -100
+                            ]
+
+                    if (
+                        space_group_labels is not None
+                        and space_group_labels.size(0) > 0
+                    ):
+                        space_group_loss = F.cross_entropy(
+                            sg_logits[: space_group_labels.size(0)], space_group_labels
+                        )
+                        outputs["space_group_loss"] = space_group_loss
 
             if "lattice" in self.active_modules:
                 lattice_hidden = hidden_states[lattice_mask]
                 if lattice_hidden.size(0) > 0:
+                    # Discrete approach (original)
                     lattice_logits = self.lattice_param_head(lattice_hidden)
                     outputs["lattice_logits"] = lattice_logits
-                    # We would need lattice parameter labels to compute this loss
-                    # outputs["lattice_loss"] = ...
+                    
+                    # Continuous approach (new)
+                    raw_lattice_lengths = self.lattice_length_head(lattice_hidden)
+                    raw_lattice_angles = self.lattice_angle_head(lattice_hidden)
+                    
+                    # Bound values to realistic ranges
+                    lattice_lengths = bound_lattice_lengths(raw_lattice_lengths)
+                    lattice_angles = bound_lattice_angles(raw_lattice_angles)
+                    
+                    # Store predictions
+                    outputs["lattice_lengths"] = lattice_lengths
+                    outputs["lattice_angles"] = lattice_angles
+
+                    # For the discrete approach
+                    lattice_labels = None
+                    if labels is not None:
+                        lattice_indices = (
+                            (segment_ids == self.config.SEGMENT_LATTICE)
+                            .nonzero()
+                            .squeeze(-1)
+                        )
+                        if lattice_indices.size(0) > 0:
+                            lattice_labels = torch.gather(
+                                labels, 1, lattice_indices.unsqueeze(1)
+                            ).squeeze(1)
+                            lattice_labels = lattice_labels[lattice_labels != -100]
+
+                    if lattice_labels is not None and lattice_labels.size(0) > 0:
+                        lattice_loss = F.cross_entropy(
+                            lattice_logits[: lattice_labels.size(0)], lattice_labels
+                        )
+                        outputs["lattice_loss"] = lattice_loss
+                        
+                    # For continuous approach, we would need ground truth values
+                    # If ground truth lattice parameters are provided
+                    if hasattr(self, "_lattice_ground_truth") and self._lattice_ground_truth is not None:
+                        # Get ground truth values
+                        gt_lengths = self._lattice_ground_truth["lengths"]
+                        gt_angles = self._lattice_ground_truth["angles"]
+                        
+                        # Calculate MSE loss for lattice parameters
+                        length_loss = F.mse_loss(lattice_lengths, gt_lengths)
+                        angle_loss = F.mse_loss(lattice_angles, gt_angles)
+                        
+                        # Combined loss with appropriate weighting
+                        lattice_regression_loss = length_loss + angle_loss
+                        outputs["lattice_regression_loss"] = lattice_regression_loss
 
             if "atoms" in self.active_modules:
                 element_mask = segment_ids == self.config.SEGMENT_ELEMENT
@@ -536,16 +681,102 @@ class HierarchicalCrystalTransformer(nn.Module):
                     element_logits = self.element_head(element_hidden)
                     outputs["element_logits"] = element_logits
 
+                    element_labels = None
+                    if labels is not None:
+                        element_indices = element_mask.nonzero().squeeze(-1)
+                        if element_indices.size(0) > 0:
+                            element_labels = torch.gather(
+                                labels, 1, element_indices.unsqueeze(1)
+                            ).squeeze(1)
+                            element_labels = element_labels[element_labels != -100]
+
+                    if element_labels is not None and element_labels.size(0) > 0:
+                        element_loss = F.cross_entropy(
+                            element_logits[: element_labels.size(0)], element_labels
+                        )
+                        outputs["element_loss"] = element_loss
+
                 if wyckoff_mask.sum() > 0:
                     wyckoff_hidden = hidden_states[wyckoff_mask]
                     wyckoff_logits = self.wyckoff_head(wyckoff_hidden)
                     outputs["wyckoff_logits"] = wyckoff_logits
 
+                    wyckoff_labels = None
+                    if labels is not None:
+                        wyckoff_indices = wyckoff_mask.nonzero().squeeze(-1)
+                        if wyckoff_indices.size(0) > 0:
+                            wyckoff_labels = torch.gather(
+                                labels, 1, wyckoff_indices.unsqueeze(1)
+                            ).squeeze(1)
+                            wyckoff_labels = wyckoff_labels[wyckoff_labels != -100]
+
+                    if wyckoff_labels is not None and wyckoff_labels.size(0) > 0:
+                        wyckoff_loss = F.cross_entropy(
+                            wyckoff_logits[: wyckoff_labels.size(0)], wyckoff_labels
+                        )
+                        outputs["wyckoff_loss"] = wyckoff_loss
+
                 if coordinate_mask.sum() > 0:
                     coordinate_hidden = hidden_states[coordinate_mask]
                     outputs["coordinate_hidden"] = coordinate_hidden
-
                     outputs["avg_coordinate_embedding"] = coordinate_hidden.mean(dim=0)
+                    
+                    # Group coordinates by atoms (each atom has 3 coordinates: x, y, z)
+                    # This is a simplification - in a real implementation, you would need
+                    # to properly track which coordinates belong to which atoms
+                    batch_size = coordinate_hidden.size(0)
+                    
+                    # Discrete approach (original)
+                    if hasattr(self, "coordinate_head"):
+                        coordinate_logits = self.coordinate_head(coordinate_hidden)
+                        outputs["coordinate_logits"] = coordinate_logits
+
+                        # Extract coordinate labels if provided and compute specialized loss
+                        coordinate_labels = None
+                        if labels is not None:
+                            coordinate_indices = coordinate_mask.nonzero().squeeze(-1)
+                            if coordinate_indices.size(0) > 0:
+                                coordinate_labels = torch.gather(
+                                    labels, 1, coordinate_indices.unsqueeze(1)
+                                ).squeeze(1)
+                                coordinate_labels = coordinate_labels[
+                                    coordinate_labels != -100
+                                ]
+
+                        if (
+                            coordinate_labels is not None
+                            and coordinate_labels.size(0) > 0
+                        ):
+                            coordinate_loss = F.cross_entropy(
+                                coordinate_logits[: coordinate_labels.size(0)],
+                                coordinate_labels,
+                            )
+                            outputs["coordinate_loss"] = coordinate_loss
+                    
+                    # Continuous approach (new)
+                    # Apply the fractional coordinate prediction head
+                    # Reshape to group coordinates in sets of 3 (x,y,z) if needed
+                    num_atoms = coordinate_hidden.size(0) // 3
+                    if num_atoms > 0 and coordinate_hidden.size(0) >= 3:
+                        # For demonstration, we'll batch process the first complete set of atoms
+                        # A more complete implementation would need to track which coordinates belong to which atoms
+                        raw_coords = self.fractional_coord_head(coordinate_hidden[:num_atoms*3:3])
+                        
+                        # Bound coordinate values to be between 0 and 1
+                        fractional_coords = bound_fractional_coords(raw_coords)
+                        outputs["fractional_coords"] = fractional_coords
+                        
+                        # Calculate loss if ground truth is provided
+                        if hasattr(self, "_coordinate_ground_truth") and self._coordinate_ground_truth is not None:
+                            gt_coords = self._coordinate_ground_truth["fractional_coords"]
+                            
+                            # MSE loss for coordinates
+                            coord_regression_loss = F.mse_loss(fractional_coords, gt_coords)
+                            outputs["coord_regression_loss"] = coord_regression_loss
+                            
+                            # Optional: Add physical constraints loss
+                            # This would penalize physically implausible structures
+                            # e.g., atoms too close to each other
 
                 if atom_mask.sum() > 0:
                     outputs["atom_hidden_states"] = hidden_states[atom_mask]
@@ -565,9 +796,24 @@ class HierarchicalCrystalTransformer(nn.Module):
         repetition_penalty: float = 1.0,
         eos_token_id: Optional[int] = None,
         pad_token_id: int = 2,
+        use_continuous_predictions: bool = True,
     ) -> Dict[str, torch.Tensor]:
         """
         Generate sequences using autoregressive generation.
+        
+        Args:
+            input_ids: Input token ids
+            segment_ids: Segment ids for the input tokens
+            constraints: Dictionary of constraints for generation
+            max_length: Maximum sequence length to generate
+            temperature: Sampling temperature
+            top_k: If specified, only sample from the top k most likely tokens
+            top_p: If specified, sample from tokens with cumulative probability >= top_p
+            repetition_penalty: Penalty for repeating tokens
+            eos_token_id: Token signifying end of sequence
+            pad_token_id: Token used for padding
+            use_continuous_predictions: Whether to use the continuous prediction heads
+                                      for lattice parameters and coordinates
         """
         self.eval()
         batch_size = input_ids.shape[0]
@@ -577,6 +823,13 @@ class HierarchicalCrystalTransformer(nn.Module):
 
         generated_ids = input_ids.clone()
         generated_segments = segment_ids.clone()
+        
+        # For storing continuous predictions during generation
+        continuous_predictions = {
+            "lattice_lengths": [],
+            "lattice_angles": [],
+            "fractional_coords": []
+        } if use_continuous_predictions else None
 
         unfinished_sequences = torch.ones(batch_size, dtype=torch.bool, device=device)
 
@@ -592,6 +845,17 @@ class HierarchicalCrystalTransformer(nn.Module):
                 attention_mask=attention_mask,
                 use_causal_mask=True,
             )
+            
+            # Store continuous predictions if available and requested
+            if use_continuous_predictions:
+                # Store lattice parameters if they were predicted in this step
+                if "lattice_lengths" in outputs and "lattice_angles" in outputs:
+                    continuous_predictions["lattice_lengths"].append(outputs["lattice_lengths"])
+                    continuous_predictions["lattice_angles"].append(outputs["lattice_angles"])
+                
+                # Store fractional coordinates if they were predicted in this step
+                if "fractional_coords" in outputs:
+                    continuous_predictions["fractional_coords"].append(outputs["fractional_coords"])
 
             next_token_logits = outputs["logits"][:, -1, :]
 
@@ -692,7 +956,21 @@ class HierarchicalCrystalTransformer(nn.Module):
             if unfinished_sequences.sum() == 0 or generated_ids.shape[1] >= max_length:
                 break
 
-        return {"sequences": generated_ids, "segment_ids": generated_segments}
+        result = {"sequences": generated_ids, "segment_ids": generated_segments}
+        
+        # Include continuous predictions in the result if available
+        if use_continuous_predictions and continuous_predictions:
+            # Process and format the continuous predictions
+            if continuous_predictions["lattice_lengths"]:
+                # Combine and format lattice parameters
+                result["continuous_lattice_lengths"] = torch.cat(continuous_predictions["lattice_lengths"], dim=0)
+                result["continuous_lattice_angles"] = torch.cat(continuous_predictions["lattice_angles"], dim=0)
+            
+            if continuous_predictions["fractional_coords"]:
+                # Combine and format fractional coordinates
+                result["continuous_fractional_coords"] = torch.cat(continuous_predictions["fractional_coords"], dim=0)
+        
+        return result
 
     def _predict_next_segment_id(self, sequence_ids, segment_ids, next_tokens):
         """Predict the segment ID for the next token based on context"""

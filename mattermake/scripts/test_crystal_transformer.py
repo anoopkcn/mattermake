@@ -20,14 +20,17 @@ logger = get_pylogger(__name__)
 
 def load_model_from_checkpoint(checkpoint_path, vocab_size=None):
     """Load a model from checkpoint"""
-    if os.path.exists(checkpoint_path):
+    if checkpoint_path is not None and os.path.exists(checkpoint_path):
         logger.info(f"Loading model from checkpoint: {checkpoint_path}")
         model = HierarchicalCrystalTransformerModule.load_from_checkpoint(
             checkpoint_path
         )
         return model
     else:
-        logger.info(f"Checkpoint not found: {checkpoint_path}")
+        if checkpoint_path is None:
+            logger.info("No checkpoint path provided")
+        else:
+            logger.info(f"Checkpoint not found: {checkpoint_path}")
         logger.info("Initializing new model")
         if vocab_size is None:
             raise ValueError(

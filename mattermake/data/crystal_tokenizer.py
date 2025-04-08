@@ -246,16 +246,16 @@ class CrystalTokenizer:
                 dataset = spglib.get_symmetry_dataset(cell, symprec=0.01)
 
                 if dataset is None:
-                    print("Warning: Failed to get symmetry dataset from spglib")
+                    logger.info("Warning: Failed to get symmetry dataset from spglib")
                     wyckoff_sites = ["a"] * len(structure)
                 else:
                     wyckoff_sites = dataset.wyckoffs
-                    print(f"Found Wyckoff positions: {list(set(wyckoff_sites))}")
+                    # logger.info(f"Found Wyckoff positions: {list(set(wyckoff_sites))}")
             except Exception as e:
-                print(f"Warning: spglib Wyckoff determination failed: {e}")
+                logger.info(f"Warning: spglib Wyckoff determination failed: {e}")
                 wyckoff_sites = ["a"] * len(structure)
         except Exception as e:
-            print(f"Warning: Structure symmetrization failed: {e}")
+            logger.info(f"Warning: Structure symmetrization failed: {e}")
             sym_structure = structure
             wyckoff_sites = ["a"] * len(structure)
 

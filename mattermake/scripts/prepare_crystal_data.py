@@ -1,11 +1,19 @@
 import os
 import torch
 import argparse
+import warnings
 import pandas as pd
 from tqdm import tqdm
 from pymatgen.core import Structure
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from mattermake.data.crystal_tokenizer import CrystalTokenizer
+
+from mattermake.utils.pylogger import get_pylogger
+
+# Suppress pymatgen warnings about fractional coordinates
+warnings.filterwarnings("ignore", message=".*fractional coordinates rounded to ideal values.*")
+
+logger = get_pylogger(__name__)
 
 
 def process_structure_from_cif_string(
@@ -32,7 +40,7 @@ def process_structure_from_cif_string(
             "structure": structure,
         }
     except Exception as e:
-        print(f"Error processing material {material_id}: {e}")
+        logger.error(f"Error processing material {material_id}: {e}")
         return None
 
 
@@ -91,7 +99,7 @@ def main():
         coordinate_precision=args.coord_precision,
     )
 
-    print(f"Loading CSV file: {args.input_csv}")
+    logger.info(f"Loading CSV file: {args.input_csv}")
     df = pd.read_csv(args.input_csv)
 
     if args.material_id_col not in df.columns:
@@ -101,11 +109,11 @@ def main():
     if args.cif_col not in df.columns:
         raise ValueError(f"CIF column '{args.cif_col}' not found in CSV")
 
-    print(f"Found {len(df)} entries in CSV")
+    logger.info(f"Found {len(df)} entries in CSV")
 
     # Limit number of structures if requested
     if args.max_structures is not None and args.max_structures > 0:
-        print(f"Limiting to {args.max_structures} structures for testing")
+        logger.info(f"Limiting to {args.max_structures} structures for testing")
         df = df.head(args.max_structures)
 
     processed_data = []
@@ -132,7 +140,7 @@ def main():
         ),
     }
 
-    print(f"Successfully processed {stats['total_structures']} structures")
+    logger.info(f"Successfully processed {stats['total_structures']} structures")
 
     from sklearn.model_selection import train_test_split
 
@@ -148,12 +156,12 @@ def main():
         stratify=strata,
     )
 
-    print(
+    logger.info(
         f"Split data into {len(train_data)} training and {len(val_data)} validation structures"
     )
 
     save_path = os.path.join(args.output_dir, "processed_crystal_data.pt")
-    print(f"Saving processed data to {save_path}")
+    logger.info(f"Saving processed data to {save_path}")
 
     torch.save(
         {
@@ -184,12 +192,12 @@ def main():
 
     summary_path = os.path.join(args.output_dir, "data_summary.csv")
     pd.DataFrame(summary).to_csv(summary_path, index=False)
-    print(f"Saved data summary to {summary_path}")
+    logger.info(f"Saved data summary to {summary_path}")
 
-    print("\nDataset Statistics:")
-    print(f"Total structures: {stats['total_structures']}")
-    print(f"Unique formulas: {stats['unique_formulas']}")
-    print(f"Unique space groups: {stats['unique_space_groups']}")
+    logger.info("\nDataset Statistics:")
+    logger.info(f"Total structures: {stats['total_structures']}")
+    logger.info(f"Unique formulas: {stats['unique_formulas']}")
+    logger.info(f"Unique space groups: {stats['unique_space_groups']}")
 
 
 if __name__ == "__main__":

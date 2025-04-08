@@ -1,16 +1,20 @@
 import os
 import torch
 import argparse
-
-# from torch.utils.data import DataLoader
+import warnings
 import lightning.pytorch as pl
-
 from mattermake.data.crystal_tokenizer import CrystalTokenData
 from mattermake.data.crystal_sequence_datamodule import CrystalSequenceDataModule
 from mattermake.models.hierarchical_crystal_transformer_module import (
     HierarchicalCrystalTransformerModule,
 )
 from mattermake.utils.pylogger import get_pylogger
+
+# Suppress pymatgen warnings about fractional coordinates
+warnings.filterwarnings("ignore", message=".*fractional coordinates rounded to ideal values.*")
+
+# Uncomment if needed
+# from torch.utils.data import DataLoader
 
 # Register CrystalTokenData for serialization
 torch.serialization.add_safe_globals([CrystalTokenData])

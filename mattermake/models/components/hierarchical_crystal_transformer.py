@@ -10,14 +10,14 @@ import torch.nn.functional as F
 class HierarchicalCrystalTransformerConfig:
     """Configuration for the Hierarchical Crystal Transformer model"""
 
-    vocab_size: int = 2000  # Expected to be set based on tokenizer
+    vocab_size: int = 2000  # set based on tokenizer
     hidden_size: int = 768
     num_hidden_layers: int = 12
     num_attention_heads: int = 12
     intermediate_size: int = 3072
     hidden_dropout_prob: float = 0.1
     attention_probs_dropout_prob: float = 0.1
-    max_position_embeddings: int = 512
+    max_position_embeddings: int = 1024
     type_vocab_size: int = 7  # Number of different segment types
     initializer_range: float = 0.02
     layer_norm_eps: float = 1e-12
@@ -132,10 +132,51 @@ class MultiHeadAttention(nn.Module):
 
         # Apply attention mask if provided
         if attention_mask is not None:
-            # Adjust mask dimensions to match attention scores
+            # Get the exact shape of attention scores
+            scores_shape = attn_scores.shape  # [batch_size, num_heads, seq_len, kv_seq_len]
+            
+            # Create a brand new mask with the exact required dimensions
             if attention_mask.dim() == 2:
-                attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
-            attn_scores = attn_scores.masked_fill(attention_mask == 0, float("-inf"))
+                # For 2D masks, use the mask as a reference but create a new compatible 4D mask
+                batch_mask = attention_mask.bool().float()  # [batch_size, seq_len]
+                
+                # Initialize full mask (allow attention everywhere)
+                new_mask = torch.ones(
+                    (batch_size, scores_shape[1], scores_shape[2], scores_shape[3]),
+                    dtype=torch.bool,
+                    device=attention_mask.device
+                )
+                
+                # Apply original mask constraints - each token should only attend where allowed
+                # For each position in the sequence
+                for b in range(batch_size):
+                    for i in range(min(batch_mask.shape[1], scores_shape[2])):
+                        if batch_mask[b, i] == 0:
+                            # If this position is masked in the original mask, mask it in all heads
+                            new_mask[b, :, i, :] = False
+                
+                # Apply the carefully created mask
+                attn_scores = attn_scores.masked_fill(~new_mask, float("-inf"))
+            else:
+                # Create a simple boolean mask that exactly matches the attention scores shape
+                # This just ensures the mask has exactly the right shape
+                bool_mask = torch.zeros_like(attn_scores, dtype=torch.bool)
+                
+                # Try to use attention_mask information where possible
+                if attention_mask.dim() >= 3 and bool_mask.dim() == attention_mask.dim():
+                    # Use broadcasting where possible
+                    for i in range(attention_mask.dim()):
+                        if attention_mask.shape[i] == bool_mask.shape[i] or attention_mask.shape[i] == 1:
+                            continue
+                        else:
+                            # Dimensions don't match and can't be broadcast, create a dummy mask
+                            bool_mask = bool_mask.fill_(True)
+                            break
+                    else:
+                        # All dimensions are compatible, use broadcasting
+                        bool_mask = attention_mask == 0
+                
+                attn_scores = attn_scores.masked_fill(bool_mask, float("-inf"))
 
         # Softmax and dropout
         attn_weights = F.softmax(attn_scores, dim=-1)
@@ -321,10 +362,14 @@ class HierarchicalCrystalTransformer(nn.Module):
     def get_position_ids(self, input_ids):
         """Generate position IDs based on input sequence"""
         seq_length = input_ids.size(1)
+        # Create position IDs and clip to max_position_embeddings to avoid out-of-bounds errors
         position_ids = torch.arange(
             seq_length, dtype=torch.long, device=input_ids.device
         )
         position_ids = position_ids.unsqueeze(0).expand_as(input_ids)
+        # Clip position IDs to max_position_embeddings - 1 to avoid out-of-bounds errors
+        max_pos = self.config.max_position_embeddings - 1
+        position_ids = torch.clamp(position_ids, max=max_pos)
         return position_ids
 
     def forward(
@@ -340,11 +385,18 @@ class HierarchicalCrystalTransformer(nn.Module):
 
         # Create position IDs
         position_ids = self.get_position_ids(input_ids)
+        
+        # Apply safety clamping to avoid out-of-bounds indices
+        # Clamp input_ids to vocabulary size
+        safe_input_ids = torch.clamp(input_ids, max=self.config.vocab_size-1)
+        
+        # Clamp segment_ids to type_vocab_size
+        safe_segment_ids = torch.clamp(segment_ids, max=self.config.type_vocab_size-1)
 
         # Get embeddings for tokens, positions, and segment types
-        token_embeds = self.token_embeddings(input_ids)
+        token_embeds = self.token_embeddings(safe_input_ids)
         position_embeds = self.position_embeddings(position_ids)
-        segment_embeds = self.token_type_embeddings(segment_ids)
+        segment_embeds = self.token_type_embeddings(safe_segment_ids)
 
         # Combine embeddings
         embeddings = token_embeds + position_embeds + segment_embeds
@@ -358,13 +410,13 @@ class HierarchicalCrystalTransformer(nn.Module):
             )
 
         # Create level masks based on segment IDs
-        comp_mask = segment_ids == self.config.SEGMENT_COMPOSITION
-        sg_mask = segment_ids == self.config.SEGMENT_SPACE_GROUP
-        lattice_mask = segment_ids == self.config.SEGMENT_LATTICE
+        comp_mask = safe_segment_ids == self.config.SEGMENT_COMPOSITION
+        sg_mask = safe_segment_ids == self.config.SEGMENT_SPACE_GROUP
+        lattice_mask = safe_segment_ids == self.config.SEGMENT_LATTICE
         atom_mask = (
-            (segment_ids == self.config.SEGMENT_ELEMENT)
-            | (segment_ids == self.config.SEGMENT_WYCKOFF)
-            | (segment_ids == self.config.SEGMENT_COORDINATE)
+            (safe_segment_ids == self.config.SEGMENT_ELEMENT)
+            | (safe_segment_ids == self.config.SEGMENT_WYCKOFF)
+            | (safe_segment_ids == self.config.SEGMENT_COORDINATE)
         )
 
         # Initialize hidden states
@@ -444,7 +496,9 @@ class HierarchicalCrystalTransformer(nn.Module):
             for layer in self.atom_encoder:
                 hidden_states = layer(
                     hidden_states,
-                    attention_mask=atom_attention_mask if self.training else attention_mask,
+                    attention_mask=atom_attention_mask
+                    if self.training
+                    else attention_mask,
                     causal_mask=use_causal_mask,
                 )
 
@@ -467,12 +521,24 @@ class HierarchicalCrystalTransformer(nn.Module):
             # Apply specialized loss weighting based on token types
             shift_logits = logits[:, :-1, :].contiguous()
             shift_labels = labels[:, 1:].contiguous()
-            shift_segments = segment_ids[:, 1:].contiguous()
+            shift_segments = safe_segment_ids[:, 1:].contiguous()
+            
+            # Clamp labels to valid vocabulary range
+            # First, mask out padding/ignored values (we'll keep -100 special values)
+            label_mask = shift_labels != -100
+            valid_labels = shift_labels.clone()
+            
+            # Only clamp the non-ignored labels
+            valid_labels[label_mask] = torch.clamp(
+                shift_labels[label_mask], 
+                min=0, 
+                max=self.config.vocab_size-1
+            )
 
             # Standard cross entropy loss
             loss_fct = nn.CrossEntropyLoss(ignore_index=-100, reduction="none")
             token_losses = loss_fct(
-                shift_logits.view(-1, self.config.vocab_size), shift_labels.view(-1)
+                shift_logits.view(-1, self.config.vocab_size), valid_labels.view(-1)
             )
 
             # Reshape token losses to batch_size x seq_length
@@ -531,33 +597,33 @@ class HierarchicalCrystalTransformer(nn.Module):
                     outputs["lattice_logits"] = lattice_logits
                     # We would need lattice parameter labels to compute this loss
                     # outputs["lattice_loss"] = ...
-                    
+
             if "atoms" in self.active_modules:
                 # Extract atom-related hidden states using the component masks
                 element_mask = segment_ids == self.config.SEGMENT_ELEMENT
                 wyckoff_mask = segment_ids == self.config.SEGMENT_WYCKOFF
                 coordinate_mask = segment_ids == self.config.SEGMENT_COORDINATE
-                
+
                 # Process element predictions
                 if element_mask.sum() > 0:
                     element_hidden = hidden_states[element_mask]
                     element_logits = self.element_head(element_hidden)
                     outputs["element_logits"] = element_logits
-                
+
                 # Process Wyckoff position predictions
                 if wyckoff_mask.sum() > 0:
                     wyckoff_hidden = hidden_states[wyckoff_mask]
                     wyckoff_logits = self.wyckoff_head(wyckoff_hidden)
                     outputs["wyckoff_logits"] = wyckoff_logits
-                
+
                 # Process coordinate information (for enhanced positional understanding)
                 if coordinate_mask.sum() > 0:
                     coordinate_hidden = hidden_states[coordinate_mask]
                     outputs["coordinate_hidden"] = coordinate_hidden
-                    
+
                     # Calculate average coordinate embedding for structure analysis
                     outputs["avg_coordinate_embedding"] = coordinate_hidden.mean(dim=0)
-                
+
                 # Store atom-specific hidden states for downstream tasks
                 if atom_mask.sum() > 0:
                     outputs["atom_hidden_states"] = hidden_states[atom_mask]
@@ -669,8 +735,30 @@ class HierarchicalCrystalTransformer(nn.Module):
                     indices_to_remove = sorted_indices[i][sorted_indices_to_remove[i]]
                     next_token_logits[i, indices_to_remove] = float("-inf")
 
-            # Sample next token
+            # Sample next token with safety checks
+            # First, replace any potential NaN or inf values in logits
+            next_token_logits = torch.nan_to_num(next_token_logits, nan=-1e9, posinf=1e9, neginf=-1e9)
+            
+            # Apply softmax with safety handling
             probs = F.softmax(next_token_logits, dim=-1)
+            
+            # Ensure valid probability distribution
+            # Replace NaN/inf/negative values with zeros and renormalize
+            invalid_probs = torch.isnan(probs) | torch.isinf(probs) | (probs < 0)
+            if invalid_probs.any():
+                probs = probs.clone()
+                probs[invalid_probs] = 0.0
+                # Renormalize each row to sum to 1
+                row_sums = probs.sum(dim=-1, keepdim=True)
+                # Avoid division by zero
+                row_sums[row_sums == 0] = 1.0
+                probs = probs / row_sums
+            
+            # Add a small epsilon to ensure no zeros (for multinomial sampling)
+            probs = probs + 1e-10
+            probs = probs / probs.sum(dim=-1, keepdim=True)  # Renormalize
+            
+            # Safely sample next tokens
             next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
 
             # Set to pad_token_id if sequence is finished

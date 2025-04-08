@@ -1,0 +1,51 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - data: crystal_sequence.yaml
+  - model: crystal_transformer.yaml
+  - callbacks: default.yaml
+  - logger: wandb.yaml
+  - trainer: default.yaml
+  - paths: default.yaml
+  - extras: default.yaml
+  - hydra: default.yaml
+  - experiment: null
+
+# task name, determines output directory path
+task_name: "train_crystal_transformer"
+
+# tags to help you identify your experiments
+tags: ["crystal-transformer", "materials-generation"]
+
+# debugging
+debug: False
+ignore_warnings: True
+
+# set seed for random number generators
+seed: 42
+
+# use 16-bit precision for training
+precision: 16-mixed
+
+# compile model for faster training (may not be supported for all model types)
+compile: False
+
+# run training
+train: True
+
+# checkpoint to resume training from
+ckpt_path: null
+
+test: False
+
+# Override some trainer defaults
+trainer:
+  max_epochs: 100
+  gradient_clip_val: 1.0
+  log_every_n_steps: 20
+
+callbacks:
+  early_stopping:
+    patience: 10
+    min_delta: 0.001

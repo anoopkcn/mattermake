@@ -46,6 +46,10 @@ class HierarchicalCrystalTransformerConfig:
     space_group_loss_weight: float = 1.0
     lattice_loss_weight: float = 1.0
     atom_loss_weight: float = 0.8
+    
+    # Whether to create the discrete coordinate head (large output layer for binned coordinates)
+    # Set to False when using continuous predictions to save memory and avoid overflow
+    use_discrete_coordinate_head: bool = True
 
     SEGMENT_SPECIAL: int = 0
     SEGMENT_COMPOSITION: int = 1
@@ -348,9 +352,13 @@ class HierarchicalCrystalTransformer(nn.Module):
         self.element_head = nn.Linear(
             config.hidden_size, 95
         )  # ~95 elements commonly found in crystals
-        self.coordinate_head = nn.Linear(
-            config.hidden_size, 10**config.coordinate_embedding_dim
-        )  # For fractional coordinates
+        
+        # Only create the discrete coordinate head if configured to do so
+        # This prevents creating an enormous layer when using continuous predictions
+        if config.use_discrete_coordinate_head:
+            self.coordinate_head = nn.Linear(
+                config.hidden_size, 10**config.coordinate_embedding_dim
+            )  # For fractional coordinates
         
         # Continuous prediction heads (new approach)
         # Lattice length parameters (a, b, c) typically 2-50 Å
@@ -726,8 +734,8 @@ class HierarchicalCrystalTransformer(nn.Module):
                     # to properly track which coordinates belong to which atoms
                     batch_size = coordinate_hidden.size(0)
                     
-                    # Discrete approach (original)
-                    if hasattr(self, "coordinate_head"):
+                    # Discrete approach (original) - only if discrete coordinate head exists
+                    if hasattr(self, "coordinate_head") and self.config.use_discrete_coordinate_head:
                         coordinate_logits = self.coordinate_head(coordinate_hidden)
                         outputs["coordinate_logits"] = coordinate_logits
 

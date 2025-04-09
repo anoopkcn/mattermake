@@ -101,11 +101,27 @@ def generate_structures(
         List of generated structures
     """
     logger.info(f"Generating {num_structures} crystal structures")
-    logger.info(
-        f"Using {'continuous' if use_continuous else 'discrete'} predictions for lattice and coordinates"
-    )
+    
+    # Check model configuration
+    if hasattr(model.model, 'config'):
+        current_mode = model.model.config.prediction_mode
+        logger.info(f"Model prediction mode: {current_mode}")
+        logger.info(f"Active modules: {model.model.active_modules}")
+    else:
+        logger.warning("Could not access model config")
+        current_mode = "unknown"
+    
+    logger.info(f"Using {'continuous' if use_continuous else 'discrete'} predictions for lattice and coordinates")
     if verbose:
         logger.info("Detailed generation debugging is enabled")
+        
+        # Check if the continuous prediction heads exist in the model
+        if hasattr(model.model, 'lattice_length_head'):
+            logger.info("Model has lattice_length_head")
+        if hasattr(model.model, 'lattice_angle_head'):
+            logger.info("Model has lattice_angle_head")
+        if hasattr(model.model, 'fractional_coord_head'):
+            logger.info("Model has fractional_coord_head")
 
     structures = model.generate_structure(
         num_return_sequences=num_structures,
@@ -113,7 +129,16 @@ def generate_structures(
         top_k=top_k,
         top_p=top_p,
         verbose=verbose,
+        # Set max_length longer to ensure we generate complete structures
+        max_length=1024,
     )
+    
+    # Check if any continuous predictions were generated
+    if use_continuous or current_mode == "continuous":
+        has_continuous_lattice = any(s.get("used_continuous_lattice", False) for s in structures)
+        has_continuous_coords = any(s.get("used_continuous_coords", False) for s in structures)
+        logger.info(f"Generated structures with continuous lattice: {has_continuous_lattice}")
+        logger.info(f"Generated structures with continuous coordinates: {has_continuous_coords}")
 
     return structures
 
@@ -312,6 +337,12 @@ def main():
     model = load_model_from_checkpoint(
         args.checkpoint, vocab_size=vocab_size, use_continuous=args.continuous
     )
+    
+    # Force prediction mode to match the argument
+    # This is needed because loaded checkpoint might have been trained with a different mode
+    if hasattr(model.model, 'config'):
+        logger.info(f"Setting model prediction mode to: {'continuous' if args.continuous else 'discrete'}")
+        model.model.config.prediction_mode = 'continuous' if args.continuous else 'discrete'
 
     # Set tokenizer config in the model for proper decoding
     if tokenizer:

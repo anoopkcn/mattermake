@@ -9,6 +9,7 @@ from mattermake.models.hierarchical_crystal_transformer_module import (
     HierarchicalCrystalTransformerModule,
 )
 from mattermake.utils.pylogger import get_pylogger
+import logging # Import the logging library
 
 # Suppress pymatgen warnings about fractional coordinates
 warnings.filterwarnings(
@@ -18,7 +19,11 @@ warnings.filterwarnings(
 # Register CrystalTokenData for serialization
 torch.serialization.add_safe_globals([CrystalTokenData])
 
+# Configure the logger to output INFO messages to the console
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = get_pylogger(__name__)
+# Ensure logger level is INFO (redundant if basicConfig is used, but safe)
+logger.setLevel(logging.INFO)
 
 
 def load_model_from_checkpoint(checkpoint_path, vocab_size=None, use_continuous=False):

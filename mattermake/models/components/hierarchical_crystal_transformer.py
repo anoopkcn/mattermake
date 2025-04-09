@@ -46,7 +46,7 @@ class HierarchicalCrystalTransformerConfig:
     space_group_loss_weight: float = 1.0
     lattice_loss_weight: float = 1.0
     atom_loss_weight: float = 0.8
-    
+
     # Whether to create the discrete coordinate head (large output layer for binned coordinates)
     # Set to False when using continuous predictions to save memory and avoid overflow
     use_discrete_coordinate_head: bool = True
@@ -146,7 +146,6 @@ class MultiHeadAttention(nn.Module):
                     attention_mask.dim() >= 3
                     and bool_mask.dim() == attention_mask.dim()
                 ):
-                    # Use broadcasting where possible
                     for i in range(attention_mask.dim()):
                         if (
                             attention_mask.shape[i] == bool_mask.shape[i]
@@ -184,7 +183,6 @@ class TransformerLayer(nn.Module):
         super().__init__()
         self.attention = MultiHeadAttention(config)
 
-        # Feed-forward network
         self.ff_net = nn.Sequential(
             nn.Linear(config.hidden_size, config.intermediate_size),
             nn.GELU(),
@@ -192,11 +190,9 @@ class TransformerLayer(nn.Module):
             nn.Dropout(config.hidden_dropout_prob),
         )
 
-        # Layer normalization
         self.norm1 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.norm2 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
-        # Dropout
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(
@@ -206,7 +202,6 @@ class TransformerLayer(nn.Module):
         causal_mask: bool = False,
         key_value_states: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        # Self-attention with residual connection
         attn_output = self.attention(
             self.norm1(hidden_states),
             attention_mask=attention_mask,
@@ -215,7 +210,6 @@ class TransformerLayer(nn.Module):
         )
         hidden_states = hidden_states + self.dropout(attn_output)
 
-        # Feed-forward with residual connection
         ff_output = self.ff_net(self.norm2(hidden_states))
         hidden_states = hidden_states + ff_output
 
@@ -237,7 +231,6 @@ class CrossAttentionLayer(nn.Module):
         context_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        # Apply cross-attention with residual connection
         context_output = self.cross_attention(
             self.norm(hidden_states),
             key_value_states=context_states,
@@ -248,38 +241,37 @@ class CrossAttentionLayer(nn.Module):
 
 def bound_lattice_lengths(raw_lengths):
     """Convert raw network outputs to realistic lattice length parameters (a, b, c)
-    
+
     Args:
         raw_lengths: Raw values from the network
-        
+
     Returns:
         Bounded lattice length values between 2 and 50 Å
     """
-    # Use sigmoid and scale to appropriate range (2-50 Å)
     return 2.0 + 48.0 * torch.sigmoid(raw_lengths)
+
 
 def bound_lattice_angles(raw_angles):
     """Convert raw network outputs to realistic lattice angle parameters (alpha, beta, gamma)
-    
+
     Args:
         raw_angles: Raw values from the network
-        
+
     Returns:
         Bounded lattice angle values between 30 and 150 degrees
     """
-    # Use sigmoid and scale to appropriate range (30-150 degrees)
     return 30.0 + 120.0 * torch.sigmoid(raw_angles)
+
 
 def bound_fractional_coords(raw_coords):
     """Convert raw network outputs to fractional coordinates (x, y, z)
-    
+
     Args:
         raw_coords: Raw values from the network
-        
+
     Returns:
         Bounded fractional coordinates between 0 and 1
     """
-    # Use sigmoid to bound between 0 and 1
     return torch.sigmoid(raw_coords)
 
 
@@ -290,28 +282,23 @@ class HierarchicalCrystalTransformer(nn.Module):
         super().__init__()
         self.config = config
 
-        # Token embeddings for all token types
         self.token_embeddings = nn.Embedding(
             config.vocab_size,
             config.hidden_size,
             padding_idx=2,  # Assuming padding idx is 2
         )
 
-        # Position embeddings
         self.position_embeddings = nn.Embedding(
             config.max_position_embeddings, config.hidden_size
         )
 
-        # Segment/Token type embeddings
         self.token_type_embeddings = nn.Embedding(
             config.type_vocab_size, config.hidden_size
         )
 
-        # Layer normalization and dropout
         self.layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-        # Level-specific layers
         self.composition_encoder = nn.ModuleList(
             [TransformerLayer(config) for _ in range(config.composition_layers)]
         )
@@ -325,24 +312,19 @@ class HierarchicalCrystalTransformer(nn.Module):
             [TransformerLayer(config) for _ in range(config.atom_layers)]
         )
 
-        # Cross-level attention mechanisms (if enabled)
         if config.use_cross_attention:
             self.sg_from_comp_attention = CrossAttentionLayer(config)
             self.lattice_from_sg_attention = CrossAttentionLayer(config)
             self.atom_from_lattice_attention = CrossAttentionLayer(config)
 
-        # Integration layers (process all tokens together at the end)
         self.integration_layers = nn.ModuleList(
             [TransformerLayer(config) for _ in range(config.integration_layers)]
         )
 
-        # Output head
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-        # Specialized prediction heads for different token types
         self.space_group_head = nn.Linear(config.hidden_size, 230)  # 230 space groups
-        
-        # Discrete prediction heads (original approach)
+
         self.lattice_param_head = nn.Linear(
             config.hidden_size, 6
         )  # 6 lattice parameters
@@ -352,29 +334,25 @@ class HierarchicalCrystalTransformer(nn.Module):
         self.element_head = nn.Linear(
             config.hidden_size, 95
         )  # ~95 elements commonly found in crystals
-        
-        # Only create the discrete coordinate head if configured to do so
-        # This prevents creating an enormous layer when using continuous predictions
+
         if config.use_discrete_coordinate_head:
             self.coordinate_head = nn.Linear(
                 config.hidden_size, 10**config.coordinate_embedding_dim
             )  # For fractional coordinates
-        
-        # Continuous prediction heads (new approach)
-        # Lattice length parameters (a, b, c) typically 2-50 Å
+
         self.lattice_length_head = nn.Sequential(
             nn.Linear(config.hidden_size, config.hidden_size // 2),
             nn.SiLU(),
             nn.Linear(config.hidden_size // 2, 3),  # 3 lengths: a, b, c
         )
-        
+
         # Lattice angle parameters (alpha, beta, gamma) typically 30-150 degrees
         self.lattice_angle_head = nn.Sequential(
             nn.Linear(config.hidden_size, config.hidden_size // 2),
             nn.SiLU(),
             nn.Linear(config.hidden_size // 2, 3),  # 3 angles: alpha, beta, gamma
         )
-        
+
         # Fractional coordinates (x, y, z) between 0 and 1
         self.fractional_coord_head = nn.Sequential(
             nn.Linear(config.hidden_size, config.hidden_size // 2),
@@ -382,7 +360,6 @@ class HierarchicalCrystalTransformer(nn.Module):
             nn.Linear(config.hidden_size // 2, 3),  # 3 coordinates: x, y, z
         )
 
-        # Keep track of which modules are active (for curriculum learning)
         self.active_modules = ["composition", "space_group", "lattice", "atoms"]
 
         self.apply(self._init_weights)
@@ -404,29 +381,27 @@ class HierarchicalCrystalTransformer(nn.Module):
     def set_active_modules(self, module_list):
         """Set which modules are active (for curriculum learning)"""
         self.active_modules = module_list
-        
+
     def set_ground_truth_values(self, lattice_params=None, fractional_coords=None):
         """Set ground truth values for continuous prediction regression loss
-        
+
         Args:
             lattice_params: Dictionary with 'lengths' and 'angles' tensors for lattice parameters
             fractional_coords: Dictionary with 'fractional_coords' tensor of shape [num_atoms, 3]
         """
         if lattice_params is not None:
             self._lattice_ground_truth = lattice_params
-        
+
         if fractional_coords is not None:
             self._coordinate_ground_truth = fractional_coords
 
     def get_position_ids(self, input_ids):
         """Generate position IDs based on input sequence"""
         seq_length = input_ids.size(1)
-        # Create position IDs and clip to max_position_embeddings to avoid out-of-bounds errors
         position_ids = torch.arange(
             seq_length, dtype=torch.long, device=input_ids.device
         )
         position_ids = position_ids.unsqueeze(0).expand_as(input_ids)
-        # Clip position IDs to max_position_embeddings - 1 to avoid out-of-bounds errors
         max_pos = self.config.max_position_embeddings - 1
         position_ids = torch.clamp(position_ids, max=max_pos)
         return position_ids
@@ -546,247 +521,394 @@ class HierarchicalCrystalTransformer(nn.Module):
         outputs = {"logits": logits, "hidden_states": hidden_states}
 
         if labels is not None:
-            shift_logits = logits[:, :-1, :].contiguous()
-            shift_labels = labels[:, 1:].contiguous()
-            shift_segments = safe_segment_ids[:, 1:].contiguous()
+            try:
+                shift_logits = logits[:, :-1, :].contiguous()
+                shift_labels = labels[:, 1:].contiguous()
+                shift_segments = safe_segment_ids[:, 1:].contiguous()
 
-            label_mask = shift_labels != -100
-            valid_labels = shift_labels.clone()
+                valid_labels = (shift_labels >= 0) & (
+                    shift_labels < self.config.vocab_size
+                ) | (shift_labels == -100)
+                if not torch.all(valid_labels):
+                    shift_labels = torch.where(
+                        valid_labels,
+                        shift_labels,
+                        torch.tensor(-100, device=shift_labels.device),
+                    )
 
-            valid_labels[label_mask] = torch.clamp(
-                shift_labels[label_mask], min=0, max=self.config.vocab_size - 1
-            )
+                try:
+                    loss_fct = nn.CrossEntropyLoss(ignore_index=-100, reduction="none")
+                    token_losses = loss_fct(
+                        shift_logits.view(-1, self.config.vocab_size),
+                        shift_labels.view(-1),
+                    )
 
-            loss_fct = nn.CrossEntropyLoss(ignore_index=-100, reduction="none")
-            token_losses = loss_fct(
-                shift_logits.view(-1, self.config.vocab_size), valid_labels.view(-1)
-            )
+                    token_losses = token_losses.view(batch_size, -1)
 
-            token_losses = token_losses.view(batch_size, -1)
+                    weighted_losses = token_losses.clone()
 
-            weighted_losses = token_losses.clone()
+                    comp_indices = (
+                        shift_segments == self.config.SEGMENT_COMPOSITION
+                    ).float()
+                    if self.config.composition_loss_weight != 1.0 and torch.any(
+                        comp_indices
+                    ):
+                        weighted_losses = weighted_losses * (
+                            1.0
+                            + (self.config.composition_loss_weight - 1.0) * comp_indices
+                        )
 
-            comp_indices = (shift_segments == self.config.SEGMENT_COMPOSITION).float()
-            weighted_losses = weighted_losses * (
-                1.0 + (self.config.composition_loss_weight - 1.0) * comp_indices
-            )
+                    sg_indices = (
+                        shift_segments == self.config.SEGMENT_SPACE_GROUP
+                    ).float()
+                    if self.config.space_group_loss_weight != 1.0 and torch.any(
+                        sg_indices
+                    ):
+                        weighted_losses = weighted_losses * (
+                            1.0
+                            + (self.config.space_group_loss_weight - 1.0) * sg_indices
+                        )
 
-            sg_indices = (shift_segments == self.config.SEGMENT_SPACE_GROUP).float()
-            weighted_losses = weighted_losses * (
-                1.0 + (self.config.space_group_loss_weight - 1.0) * sg_indices
-            )
+                    lattice_indices = (
+                        shift_segments == self.config.SEGMENT_LATTICE
+                    ).float()
+                    if self.config.lattice_loss_weight != 1.0 and torch.any(
+                        lattice_indices
+                    ):
+                        weighted_losses = weighted_losses * (
+                            1.0
+                            + (self.config.lattice_loss_weight - 1.0) * lattice_indices
+                        )
 
-            lattice_indices = (shift_segments == self.config.SEGMENT_LATTICE).float()
-            weighted_losses = weighted_losses * (
-                1.0 + (self.config.lattice_loss_weight - 1.0) * lattice_indices
-            )
+                    atom_indices = (
+                        (shift_segments == self.config.SEGMENT_ELEMENT)
+                        | (shift_segments == self.config.SEGMENT_WYCKOFF)
+                        | (shift_segments == self.config.SEGMENT_COORDINATE)
+                    ).float()
+                    if self.config.atom_loss_weight != 1.0 and torch.any(atom_indices):
+                        weighted_losses = weighted_losses * (
+                            1.0 + (self.config.atom_loss_weight - 1.0) * atom_indices
+                        )
 
-            atom_indices = (
-                (shift_segments == self.config.SEGMENT_ELEMENT)
-                | (shift_segments == self.config.SEGMENT_WYCKOFF)
-                | (shift_segments == self.config.SEGMENT_COORDINATE)
-            ).float()
-            weighted_losses = weighted_losses * (
-                1.0 + (self.config.atom_loss_weight - 1.0) * atom_indices
-            )
-
-            loss = weighted_losses.sum() / (
-                weighted_losses.size(0) * weighted_losses.size(1)
-            )
-            outputs["loss"] = loss
+                    if weighted_losses.numel() > 0:
+                        loss = weighted_losses.sum() / (
+                            weighted_losses.size(0) * weighted_losses.size(1)
+                        )
+                        outputs["loss"] = loss
+                    else:
+                        outputs["loss"] = torch.tensor(
+                            0.0, device=hidden_states.device, requires_grad=True
+                        )
+                except Exception as e:
+                    print(f"Warning: Error in token loss calculation: {e}")
+                    outputs["loss"] = torch.tensor(
+                        0.0, device=hidden_states.device, requires_grad=True
+                    )
+            except Exception as e:
+                print(f"Warning: Error in preparing token loss calculation: {e}")
+                outputs["loss"] = torch.tensor(
+                    0.0, device=hidden_states.device, requires_grad=True
+                )
 
             if "space_group" in self.active_modules:
-                sg_hidden = hidden_states[sg_mask]
-                if sg_hidden.size(0) > 0:
-                    sg_logits = self.space_group_head(sg_hidden)
-                    outputs["space_group_logits"] = sg_logits
+                sg_mask = safe_segment_ids == self.config.SEGMENT_SPACE_GROUP
+                if torch.any(sg_mask):
+                    sg_hidden = hidden_states[sg_mask]
+                    if sg_hidden.size(0) > 0:
+                        sg_logits = self.space_group_head(sg_hidden)
+                        outputs["space_group_logits"] = sg_logits
 
-                    space_group_labels = None
-                    if labels is not None:
-                        space_group_indices = (
-                            (segment_ids == self.config.SEGMENT_SPACE_GROUP)
-                            .nonzero()
-                            .squeeze(-1)
-                        )
-                        if space_group_indices.size(0) > 0:
-                            space_group_labels = torch.gather(
-                                labels, 1, space_group_indices.unsqueeze(1)
-                            ).squeeze(1)
-                            space_group_labels = space_group_labels[
-                                space_group_labels != -100
-                            ]
+                        if labels is not None:
+                            sg_labels_mask = (
+                                safe_segment_ids == self.config.SEGMENT_SPACE_GROUP
+                            )
 
-                    if (
-                        space_group_labels is not None
-                        and space_group_labels.size(0) > 0
-                    ):
-                        space_group_loss = F.cross_entropy(
-                            sg_logits[: space_group_labels.size(0)], space_group_labels
-                        )
-                        outputs["space_group_loss"] = space_group_loss
+                            if torch.any(sg_labels_mask):
+                                space_group_labels = labels[sg_labels_mask]
+
+                                valid_labels = (space_group_labels >= 0) & (
+                                    space_group_labels
+                                    < self.space_group_head.out_features
+                                ) | (space_group_labels == -100)
+                                if not torch.all(valid_labels):
+                                    space_group_labels = torch.where(
+                                        valid_labels,
+                                        space_group_labels,
+                                        torch.tensor(
+                                            -100, device=space_group_labels.device
+                                        ),
+                                    )
+
+                                if sg_logits.size(0) == space_group_labels.size(0):
+                                    try:
+                                        space_group_loss = F.cross_entropy(
+                                            sg_logits,
+                                            space_group_labels,
+                                            ignore_index=-100,
+                                        )
+                                        outputs["space_group_loss"] = space_group_loss
+                                    except Exception as e:
+                                        print(
+                                            f"Warning: Failed to calculate space group loss: {e}"
+                                        )
+                                else:
+                                    print(
+                                        f"Warning: Space group logits and labels size mismatch: {sg_logits.size(0)} vs {space_group_labels.size(0)}"
+                                    )
 
             if "lattice" in self.active_modules:
-                lattice_hidden = hidden_states[lattice_mask]
-                if lattice_hidden.size(0) > 0:
-                    # Discrete approach (original)
-                    lattice_logits = self.lattice_param_head(lattice_hidden)
-                    outputs["lattice_logits"] = lattice_logits
-                    
-                    # Continuous approach (new)
-                    raw_lattice_lengths = self.lattice_length_head(lattice_hidden)
-                    raw_lattice_angles = self.lattice_angle_head(lattice_hidden)
-                    
-                    # Bound values to realistic ranges
-                    lattice_lengths = bound_lattice_lengths(raw_lattice_lengths)
-                    lattice_angles = bound_lattice_angles(raw_lattice_angles)
-                    
-                    # Store predictions
-                    outputs["lattice_lengths"] = lattice_lengths
-                    outputs["lattice_angles"] = lattice_angles
+                lattice_mask = safe_segment_ids == self.config.SEGMENT_LATTICE
+                if torch.any(lattice_mask):
+                    lattice_hidden = hidden_states[lattice_mask]
+                    if lattice_hidden.size(0) > 0:
+                        # Discrete approach
+                        lattice_logits = self.lattice_param_head(lattice_hidden)
+                        outputs["lattice_logits"] = lattice_logits
 
-                    # For the discrete approach
-                    lattice_labels = None
-                    if labels is not None:
-                        lattice_indices = (
-                            (segment_ids == self.config.SEGMENT_LATTICE)
-                            .nonzero()
-                            .squeeze(-1)
-                        )
-                        if lattice_indices.size(0) > 0:
-                            lattice_labels = torch.gather(
-                                labels, 1, lattice_indices.unsqueeze(1)
-                            ).squeeze(1)
-                            lattice_labels = lattice_labels[lattice_labels != -100]
+                        # Continuous approach
+                        raw_lattice_lengths = self.lattice_length_head(lattice_hidden)
+                        raw_lattice_angles = self.lattice_angle_head(lattice_hidden)
 
-                    if lattice_labels is not None and lattice_labels.size(0) > 0:
-                        lattice_loss = F.cross_entropy(
-                            lattice_logits[: lattice_labels.size(0)], lattice_labels
-                        )
-                        outputs["lattice_loss"] = lattice_loss
-                        
-                    # For continuous approach, we would need ground truth values
-                    # If ground truth lattice parameters are provided
-                    if hasattr(self, "_lattice_ground_truth") and self._lattice_ground_truth is not None:
-                        # Get ground truth values
+                        lattice_lengths = bound_lattice_lengths(raw_lattice_lengths)
+                        lattice_angles = bound_lattice_angles(raw_lattice_angles)
+
+                        outputs["lattice_lengths"] = lattice_lengths
+                        outputs["lattice_angles"] = lattice_angles
+
+                        if labels is not None:
+                            lat_labels_mask = (
+                                safe_segment_ids == self.config.SEGMENT_LATTICE
+                            )
+
+                            if torch.any(lat_labels_mask):
+                                lattice_labels = labels[lat_labels_mask]
+
+                                valid_labels = (lattice_labels >= 0) & (
+                                    lattice_labels
+                                    < self.lattice_param_head.out_features
+                                ) | (lattice_labels == -100)
+                                if not torch.all(valid_labels):
+                                    lattice_labels = torch.where(
+                                        valid_labels,
+                                        lattice_labels,
+                                        torch.tensor(
+                                            -100, device=lattice_labels.device
+                                        ),
+                                    )
+
+                                if lattice_logits.size(0) == lattice_labels.size(0):
+                                    try:
+                                        lattice_loss = F.cross_entropy(
+                                            lattice_logits,
+                                            lattice_labels,
+                                            ignore_index=-100,
+                                        )
+                                        outputs["lattice_loss"] = (
+                                            lattice_loss  # Store discrete loss
+                                        )
+                                    except Exception as e:
+                                        print(
+                                            f"Warning: Failed to calculate lattice loss: {e}"
+                                        )
+
+                    if (
+                        hasattr(self, "_lattice_ground_truth")
+                        and self._lattice_ground_truth is not None
+                    ):
                         gt_lengths = self._lattice_ground_truth["lengths"]
                         gt_angles = self._lattice_ground_truth["angles"]
-                        
-                        # Calculate MSE loss for lattice parameters
+
                         length_loss = F.mse_loss(lattice_lengths, gt_lengths)
                         angle_loss = F.mse_loss(lattice_angles, gt_angles)
-                        
-                        # Combined loss with appropriate weighting
+
                         lattice_regression_loss = length_loss + angle_loss
                         outputs["lattice_regression_loss"] = lattice_regression_loss
 
             if "atoms" in self.active_modules:
-                element_mask = segment_ids == self.config.SEGMENT_ELEMENT
-                wyckoff_mask = segment_ids == self.config.SEGMENT_WYCKOFF
-                coordinate_mask = segment_ids == self.config.SEGMENT_COORDINATE
+                element_mask = safe_segment_ids == self.config.SEGMENT_ELEMENT
+                wyckoff_mask = safe_segment_ids == self.config.SEGMENT_WYCKOFF
+                coordinate_mask = safe_segment_ids == self.config.SEGMENT_COORDINATE
 
-                if element_mask.sum() > 0:
+                if torch.any(element_mask):
                     element_hidden = hidden_states[element_mask]
-                    element_logits = self.element_head(element_hidden)
-                    outputs["element_logits"] = element_logits
+                    if element_hidden.size(0) > 0:
+                        element_logits = self.element_head(element_hidden)
+                        outputs["element_logits"] = element_logits
 
-                    element_labels = None
-                    if labels is not None:
-                        element_indices = element_mask.nonzero().squeeze(-1)
-                        if element_indices.size(0) > 0:
-                            element_labels = torch.gather(
-                                labels, 1, element_indices.unsqueeze(1)
-                            ).squeeze(1)
-                            element_labels = element_labels[element_labels != -100]
-
-                    if element_labels is not None and element_labels.size(0) > 0:
-                        element_loss = F.cross_entropy(
-                            element_logits[: element_labels.size(0)], element_labels
-                        )
-                        outputs["element_loss"] = element_loss
-
-                if wyckoff_mask.sum() > 0:
-                    wyckoff_hidden = hidden_states[wyckoff_mask]
-                    wyckoff_logits = self.wyckoff_head(wyckoff_hidden)
-                    outputs["wyckoff_logits"] = wyckoff_logits
-
-                    wyckoff_labels = None
-                    if labels is not None:
-                        wyckoff_indices = wyckoff_mask.nonzero().squeeze(-1)
-                        if wyckoff_indices.size(0) > 0:
-                            wyckoff_labels = torch.gather(
-                                labels, 1, wyckoff_indices.unsqueeze(1)
-                            ).squeeze(1)
-                            wyckoff_labels = wyckoff_labels[wyckoff_labels != -100]
-
-                    if wyckoff_labels is not None and wyckoff_labels.size(0) > 0:
-                        wyckoff_loss = F.cross_entropy(
-                            wyckoff_logits[: wyckoff_labels.size(0)], wyckoff_labels
-                        )
-                        outputs["wyckoff_loss"] = wyckoff_loss
-
-                if coordinate_mask.sum() > 0:
-                    coordinate_hidden = hidden_states[coordinate_mask]
-                    outputs["coordinate_hidden"] = coordinate_hidden
-                    outputs["avg_coordinate_embedding"] = coordinate_hidden.mean(dim=0)
-                    
-                    # Group coordinates by atoms (each atom has 3 coordinates: x, y, z)
-                    # This is a simplification - in a real implementation, you would need
-                    # to properly track which coordinates belong to which atoms
-                    batch_size = coordinate_hidden.size(0)
-                    
-                    # Discrete approach (original) - only if discrete coordinate head exists
-                    if hasattr(self, "coordinate_head") and self.config.use_discrete_coordinate_head:
-                        coordinate_logits = self.coordinate_head(coordinate_hidden)
-                        outputs["coordinate_logits"] = coordinate_logits
-
-                        # Extract coordinate labels if provided and compute specialized loss
-                        coordinate_labels = None
                         if labels is not None:
-                            coordinate_indices = coordinate_mask.nonzero().squeeze(-1)
-                            if coordinate_indices.size(0) > 0:
-                                coordinate_labels = torch.gather(
-                                    labels, 1, coordinate_indices.unsqueeze(1)
-                                ).squeeze(1)
-                                coordinate_labels = coordinate_labels[
-                                    coordinate_labels != -100
-                                ]
+                            element_labels = labels[element_mask]
+
+                            valid_labels = (element_labels >= 0) & (
+                                element_labels < self.element_head.out_features
+                            ) | (element_labels == -100)
+                            if not torch.all(valid_labels):
+                                element_labels = torch.where(
+                                    valid_labels,
+                                    element_labels,
+                                    torch.tensor(-100, device=element_labels.device),
+                                )
+
+                            if element_logits.size(0) == element_labels.size(0):
+                                try:
+                                    element_loss = F.cross_entropy(
+                                        element_logits,
+                                        element_labels,
+                                        ignore_index=-100,
+                                    )
+                                    outputs["element_loss"] = element_loss
+                                except Exception as e:
+                                    print(
+                                        f"Warning: Failed to calculate element loss: {e}"
+                                    )
+                            else:
+                                print(
+                                    f"Warning: Element logits and labels size mismatch: {element_logits.size(0)} vs {element_labels.size(0)}"
+                                )
+
+                if torch.any(wyckoff_mask):
+                    wyckoff_hidden = hidden_states[wyckoff_mask]
+                    if wyckoff_hidden.size(0) > 0:
+                        wyckoff_logits = self.wyckoff_head(wyckoff_hidden)
+                        outputs["wyckoff_logits"] = wyckoff_logits
+
+                        if labels is not None:
+                            wyckoff_labels = labels[wyckoff_mask]
+
+                            valid_labels = (wyckoff_labels >= 0) & (
+                                wyckoff_labels < self.wyckoff_head.out_features
+                            ) | (wyckoff_labels == -100)
+                            if not torch.all(valid_labels):
+                                wyckoff_labels = torch.where(
+                                    valid_labels,
+                                    wyckoff_labels,
+                                    torch.tensor(-100, device=wyckoff_labels.device),
+                                )
+
+                            if wyckoff_logits.size(0) == wyckoff_labels.size(0):
+                                try:
+                                    wyckoff_loss = F.cross_entropy(
+                                        wyckoff_logits,
+                                        wyckoff_labels,
+                                        ignore_index=-100,
+                                    )
+                                    outputs["wyckoff_loss"] = wyckoff_loss
+                                except Exception as e:
+                                    print(
+                                        f"Warning: Failed to calculate wyckoff loss: {e}"
+                                    )
+                            else:
+                                print(
+                                    f"Warning: Wyckoff logits and labels size mismatch: {wyckoff_logits.size(0)} vs {wyckoff_labels.size(0)}"
+                                )
+
+                if torch.any(coordinate_mask):
+                    coordinate_hidden = hidden_states[coordinate_mask]
+                    if coordinate_hidden.size(0) > 0:
+                        outputs["coordinate_hidden"] = coordinate_hidden
+                        outputs["avg_coordinate_embedding"] = coordinate_hidden.mean(
+                            dim=0
+                        )
+
+                        # Group coordinates by atoms (each atom has 3 coordinates: x, y, z)
+                        # This is a simplification - in a real implementation, we need
+                        # to properly track which coordinates belong to which atoms :: TODO
+                        batch_size = coordinate_hidden.size(0)
 
                         if (
-                            coordinate_labels is not None
-                            and coordinate_labels.size(0) > 0
+                            hasattr(self, "coordinate_head")
+                            and self.config.use_discrete_coordinate_head
                         ):
-                            coordinate_loss = F.cross_entropy(
-                                coordinate_logits[: coordinate_labels.size(0)],
-                                coordinate_labels,
-                            )
-                            outputs["coordinate_loss"] = coordinate_loss
-                    
-                    # Continuous approach (new)
-                    # Apply the fractional coordinate prediction head
-                    # Reshape to group coordinates in sets of 3 (x,y,z) if needed
-                    num_atoms = coordinate_hidden.size(0) // 3
-                    if num_atoms > 0 and coordinate_hidden.size(0) >= 3:
-                        # For demonstration, we'll batch process the first complete set of atoms
-                        # A more complete implementation would need to track which coordinates belong to which atoms
-                        raw_coords = self.fractional_coord_head(coordinate_hidden[:num_atoms*3:3])
-                        
-                        # Bound coordinate values to be between 0 and 1
-                        fractional_coords = bound_fractional_coords(raw_coords)
-                        outputs["fractional_coords"] = fractional_coords
-                        
-                        # Calculate loss if ground truth is provided
-                        if hasattr(self, "_coordinate_ground_truth") and self._coordinate_ground_truth is not None:
-                            gt_coords = self._coordinate_ground_truth["fractional_coords"]
-                            
-                            # MSE loss for coordinates
-                            coord_regression_loss = F.mse_loss(fractional_coords, gt_coords)
-                            outputs["coord_regression_loss"] = coord_regression_loss
-                            
-                            # Optional: Add physical constraints loss
-                            # This would penalize physically implausible structures
-                            # e.g., atoms too close to each other
+                            try:
+                                coordinate_logits = self.coordinate_head(
+                                    coordinate_hidden
+                                )
+                                outputs["coordinate_logits"] = coordinate_logits
 
-                if atom_mask.sum() > 0:
+                                if labels is not None:
+                                    coordinate_labels = labels[coordinate_mask]
+
+                                    valid_labels = (coordinate_labels >= 0) & (
+                                        coordinate_labels
+                                        < self.coordinate_head.out_features
+                                    ) | (coordinate_labels == -100)
+                                    if not torch.all(valid_labels):
+                                        coordinate_labels = torch.where(
+                                            valid_labels,
+                                            coordinate_labels,
+                                            torch.tensor(
+                                                -100, device=coordinate_labels.device
+                                            ),
+                                        )
+
+                                    if coordinate_logits.size(
+                                        0
+                                    ) == coordinate_labels.size(0):
+                                        try:
+                                            coordinate_loss = F.cross_entropy(
+                                                coordinate_logits,
+                                                coordinate_labels,
+                                                ignore_index=-100,
+                                            )
+                                            outputs["coordinate_loss"] = coordinate_loss
+                                        except Exception as e:
+                                            print(
+                                                f"Warning: Failed to calculate coordinate loss: {e}"
+                                            )
+                                    else:
+                                        print(
+                                            f"Warning: Coordinate logits and labels size mismatch: {coordinate_logits.size(0)} vs {coordinate_labels.size(0)}"
+                                        )
+                            except Exception as e:
+                                print(
+                                    f"Warning: Failed to compute coordinate logits: {e}"
+                                )
+
+                    try:
+                        num_atoms = coordinate_hidden.size(0) // 3
+                        if num_atoms > 0 and coordinate_hidden.size(0) >= 3:
+                            raw_coords = self.fractional_coord_head(
+                                coordinate_hidden[: num_atoms * 3 : 3]
+                            )
+
+                            fractional_coords = bound_fractional_coords(raw_coords)
+                            outputs["fractional_coords"] = fractional_coords
+
+                            if (
+                                hasattr(self, "_coordinate_ground_truth")
+                                and self._coordinate_ground_truth is not None
+                            ):
+                                try:
+                                    gt_coords = self._coordinate_ground_truth[
+                                        "fractional_coords"
+                                    ]
+
+                                    if fractional_coords.size() == gt_coords.size():
+                                        coord_regression_loss = F.mse_loss(
+                                            fractional_coords, gt_coords
+                                        )
+                                        outputs["coord_regression_loss"] = (
+                                            coord_regression_loss
+                                        )
+                                    else:
+                                        print(
+                                            f"Warning: Coordinate shape mismatch: {fractional_coords.size()} vs {gt_coords.size()}"
+                                        )
+
+                                except Exception as e:
+                                    print(
+                                        f"Warning: Failed to calculate coordinate regression loss: {e}"
+                                    )
+                    except Exception as e:
+                        print(
+                            f"Warning: Error in continuous coordinate prediction: {e}"
+                        )
+
+                atom_mask = (
+                    (safe_segment_ids == self.config.SEGMENT_ELEMENT)
+                    | (safe_segment_ids == self.config.SEGMENT_WYCKOFF)
+                    | (safe_segment_ids == self.config.SEGMENT_COORDINATE)
+                )
+                if torch.any(atom_mask):
                     outputs["atom_hidden_states"] = hidden_states[atom_mask]
 
         return outputs
@@ -808,7 +930,7 @@ class HierarchicalCrystalTransformer(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         """
         Generate sequences using autoregressive generation.
-        
+
         Args:
             input_ids: Input token ids
             segment_ids: Segment ids for the input tokens
@@ -831,13 +953,12 @@ class HierarchicalCrystalTransformer(nn.Module):
 
         generated_ids = input_ids.clone()
         generated_segments = segment_ids.clone()
-        
-        # For storing continuous predictions during generation
-        continuous_predictions = {
-            "lattice_lengths": [],
-            "lattice_angles": [],
-            "fractional_coords": []
-        } if use_continuous_predictions else None
+
+        continuous_predictions = (
+            {"lattice_lengths": [], "lattice_angles": [], "fractional_coords": []}
+            if use_continuous_predictions
+            else None
+        )
 
         unfinished_sequences = torch.ones(batch_size, dtype=torch.bool, device=device)
 
@@ -853,17 +974,20 @@ class HierarchicalCrystalTransformer(nn.Module):
                 attention_mask=attention_mask,
                 use_causal_mask=True,
             )
-            
-            # Store continuous predictions if available and requested
+
             if use_continuous_predictions:
-                # Store lattice parameters if they were predicted in this step
                 if "lattice_lengths" in outputs and "lattice_angles" in outputs:
-                    continuous_predictions["lattice_lengths"].append(outputs["lattice_lengths"])
-                    continuous_predictions["lattice_angles"].append(outputs["lattice_angles"])
-                
-                # Store fractional coordinates if they were predicted in this step
+                    continuous_predictions["lattice_lengths"].append(
+                        outputs["lattice_lengths"]
+                    )
+                    continuous_predictions["lattice_angles"].append(
+                        outputs["lattice_angles"]
+                    )
+
                 if "fractional_coords" in outputs:
-                    continuous_predictions["fractional_coords"].append(outputs["fractional_coords"])
+                    continuous_predictions["fractional_coords"].append(
+                        outputs["fractional_coords"]
+                    )
 
             next_token_logits = outputs["logits"][:, -1, :]
 
@@ -913,22 +1037,17 @@ class HierarchicalCrystalTransformer(nn.Module):
                     indices_to_remove = sorted_indices[i][sorted_indices_to_remove[i]]
                     next_token_logits[i, indices_to_remove] = float("-inf")
 
-            # First, replace any potential NaN or inf values in logits
             next_token_logits = torch.nan_to_num(
                 next_token_logits, nan=-1e9, posinf=1e9, neginf=-1e9
             )
 
             probs = F.softmax(next_token_logits, dim=-1)
 
-            # Ensure valid probability distribution
-            # Replace NaN/inf/negative values with zeros and renormalize
             invalid_probs = torch.isnan(probs) | torch.isinf(probs) | (probs < 0)
             if invalid_probs.any():
                 probs = probs.clone()
                 probs[invalid_probs] = 0.0
-                # Renormalize each row to sum to 1
                 row_sums = probs.sum(dim=-1, keepdim=True)
-                # Avoid division by zero
                 row_sums[row_sums == 0] = 1.0
                 probs = probs / row_sums
 
@@ -941,9 +1060,6 @@ class HierarchicalCrystalTransformer(nn.Module):
                 ~unfinished_sequences
             )
 
-            # Determine segment ID for the next token
-            # This requires knowledge of the token sequence and current context
-            # A more realistic implementation would determine this based on the token type. TODO
             next_segments = self._predict_next_segment_id(
                 generated_ids, generated_segments, next_tokens
             )
@@ -965,19 +1081,21 @@ class HierarchicalCrystalTransformer(nn.Module):
                 break
 
         result = {"sequences": generated_ids, "segment_ids": generated_segments}
-        
-        # Include continuous predictions in the result if available
+
         if use_continuous_predictions and continuous_predictions:
-            # Process and format the continuous predictions
             if continuous_predictions["lattice_lengths"]:
-                # Combine and format lattice parameters
-                result["continuous_lattice_lengths"] = torch.cat(continuous_predictions["lattice_lengths"], dim=0)
-                result["continuous_lattice_angles"] = torch.cat(continuous_predictions["lattice_angles"], dim=0)
-            
+                result["continuous_lattice_lengths"] = torch.cat(
+                    continuous_predictions["lattice_lengths"], dim=0
+                )
+                result["continuous_lattice_angles"] = torch.cat(
+                    continuous_predictions["lattice_angles"], dim=0
+                )
+
             if continuous_predictions["fractional_coords"]:
-                # Combine and format fractional coordinates
-                result["continuous_fractional_coords"] = torch.cat(continuous_predictions["fractional_coords"], dim=0)
-        
+                result["continuous_fractional_coords"] = torch.cat(
+                    continuous_predictions["fractional_coords"], dim=0
+                )
+
         return result
 
     def _predict_next_segment_id(self, sequence_ids, segment_ids, next_tokens):
@@ -1024,8 +1142,6 @@ class HierarchicalCrystalTransformer(nn.Module):
                 next_segments[i] = self.config.SEGMENT_COORDINATE
 
             elif curr_seg == self.config.SEGMENT_COORDINATE:
-                # After 3 coordinates, switch back to element for next atom
-                # Count consecutive coordinate tokens
                 coord_count = 0
                 for j in range(len(segs) - 1, -1, -1):
                     if segs[j] == self.config.SEGMENT_COORDINATE:

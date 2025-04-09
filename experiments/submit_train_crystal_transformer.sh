@@ -27,6 +27,5 @@ srun --gres=gpu:4 --nodes=${SLURM_JOB_NUM_NODES} --ntasks-per-node=4 --cpu-bind=
         data.batch_size=32 \
         data.num_workers=4 \
         continuous_predictions=true \
-        +continuous_regression_weight=0.5 \
         logger.wandb.name="continuous_crystal_transformer"
 "

@@ -9,7 +9,7 @@ from mattermake.models.hierarchical_crystal_transformer_module import (
     HierarchicalCrystalTransformerModule,
 )
 from mattermake.utils.pylogger import get_pylogger
-import logging # Import the logging library
+import logging  # Import the logging library
 
 # Suppress pymatgen warnings about fractional coordinates
 warnings.filterwarnings(
@@ -20,7 +20,9 @@ warnings.filterwarnings(
 torch.serialization.add_safe_globals([CrystalTokenData])
 
 # Configure the logger to output INFO messages to the console
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 logger = get_pylogger(__name__)
 # Ensure logger level is INFO (redundant if basicConfig is used, but safe)
 logger.setLevel(logging.INFO)
@@ -28,7 +30,7 @@ logger.setLevel(logging.INFO)
 
 def load_model_from_checkpoint(checkpoint_path, vocab_size=None, use_continuous=False):
     """Load a model from checkpoint
-    
+
     Args:
         checkpoint_path: Path to the checkpoint file
         vocab_size: Vocabulary size for the model
@@ -54,7 +56,7 @@ def load_model_from_checkpoint(checkpoint_path, vocab_size=None, use_continuous=
         model = HierarchicalCrystalTransformerModule(
             vocab_size=vocab_size,
             coordinate_embedding_dim=4,  # Reduced from default (32) to avoid overflow
-            use_discrete_coordinate_head=not use_continuous  # Disable discrete head when using continuous predictions
+            use_discrete_coordinate_head=not use_continuous,  # Disable discrete head when using continuous predictions
         )
         return model
 
@@ -76,7 +78,13 @@ def train_model(model, data_module, max_epochs=5, gpus=1):
 
 
 def generate_structures(
-    model, num_structures=5, temperature=0.8, top_k=40, top_p=0.9, use_continuous=True, verbose=False
+    model,
+    num_structures=5,
+    temperature=0.8,
+    top_k=40,
+    top_p=0.9,
+    use_continuous=True,
+    verbose=False,
 ):
     """Generate crystal structures using the trained model
 
@@ -259,7 +267,11 @@ def main():
         help="Limit number of structures to load for testing (e.g. 1000)",
     )
     parser.add_argument("--gpu", action="store_true", help="Use GPU if available")
-    parser.add_argument("--verbose", action="store_true", help="Enable detailed debugging output during generation")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable detailed debugging output during generation",
+    )
     args = parser.parse_args()
 
     # Set up data module
@@ -299,9 +311,7 @@ def main():
 
     # Load or initialize model
     model = load_model_from_checkpoint(
-        args.checkpoint, 
-        vocab_size=vocab_size,
-        use_continuous=args.continuous
+        args.checkpoint, vocab_size=vocab_size, use_continuous=args.continuous
     )
 
     # Set tokenizer config in the model for proper decoding
@@ -354,6 +364,7 @@ if __name__ == "__main__":
     # Usage:
     # python -m mattermake.scripts.test_crystal_transformer_fixed \
     #     --data_dir data/structure_tokens \
+    #     --train
     #     --limit_structures 1000 \
     #     --num_structures 5 \
     #     --temperature 0.8 \

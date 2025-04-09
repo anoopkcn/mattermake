@@ -26,5 +26,5 @@ srun --gres=gpu:4 --nodes=${SLURM_JOB_NUM_NODES} --ntasks-per-node=4 --cpu-bind=
         trainer.devices=4 \
         data.batch_size=32 \
         data.num_workers=4 \
-        continuous_predictions=true
+        model.prediction_mode=continuous
 "

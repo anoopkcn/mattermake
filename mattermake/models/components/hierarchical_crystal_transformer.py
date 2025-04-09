@@ -47,9 +47,8 @@ class HierarchicalCrystalTransformerConfig:
     lattice_loss_weight: float = 1.0
     atom_loss_weight: float = 0.8
 
-    # Whether to create the discrete coordinate head (large output layer for binned coordinates)
-    # Set to False when using continuous predictions to save memory and avoid overflow
-    use_discrete_coordinate_head: bool = True
+    # Mode for predictions: "discrete" or "continuous"
+    prediction_mode: str = "discrete"
 
     SEGMENT_SPECIAL: int = 0
     SEGMENT_COMPOSITION: int = 1
@@ -335,10 +334,14 @@ class HierarchicalCrystalTransformer(nn.Module):
             config.hidden_size, 95
         )  # ~95 elements commonly found in crystals
 
-        if config.use_discrete_coordinate_head:
+        # Create discrete coordinate head only in discrete prediction mode
+        if config.prediction_mode == "discrete":
             self.coordinate_head = nn.Linear(
                 config.hidden_size, 10**config.coordinate_embedding_dim
             )  # For fractional coordinates
+        else:
+            # In continuous mode, don't create the large coordinate head to save memory
+            self.coordinate_head = None
 
         self.lattice_length_head = nn.Sequential(
             nn.Linear(config.hidden_size, config.hidden_size // 2),
@@ -814,10 +817,8 @@ class HierarchicalCrystalTransformer(nn.Module):
                         # to properly track which coordinates belong to which atoms :: TODO
                         batch_size = coordinate_hidden.size(0)
 
-                        if (
-                            hasattr(self, "coordinate_head")
-                            and self.config.use_discrete_coordinate_head
-                        ):
+                        # Handle coordinate predictions based on prediction mode
+                        if self.config.prediction_mode == "discrete" and hasattr(self, "coordinate_head") and self.coordinate_head is not None:
                             try:
                                 coordinate_logits = self.coordinate_head(
                                     coordinate_hidden
@@ -926,7 +927,6 @@ class HierarchicalCrystalTransformer(nn.Module):
         repetition_penalty: float = 1.0,
         eos_token_id: Optional[int] = None,
         pad_token_id: int = 2,
-        use_continuous_predictions: bool = True,
         verbose: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
@@ -943,8 +943,7 @@ class HierarchicalCrystalTransformer(nn.Module):
             repetition_penalty: Penalty for repeating tokens
             eos_token_id: Token signifying end of sequence
             pad_token_id: Token used for padding
-            use_continuous_predictions: Whether to use the continuous prediction heads
-                                      for lattice parameters and coordinates
+            verbose: Whether to print verbose output during generation
         """
         self.eval()
         batch_size = input_ids.shape[0]
@@ -954,16 +953,22 @@ class HierarchicalCrystalTransformer(nn.Module):
 
         generated_ids = input_ids.clone()
         generated_segments = segment_ids.clone()
-        
+
         if verbose:
-            print(f"Starting generation with temperature={temperature}, top_k={top_k}, top_p={top_p}")
-            print(f"Using continuous predictions: {use_continuous_predictions}")
+            print(
+                f"Starting generation with temperature={temperature}, top_k={top_k}, top_p={top_p}"
+            )
+            print(f"Using prediction mode: {self.config.prediction_mode}")
             print(f"Initial tokens shape: {input_ids.shape}")
-            idx_to_token = constraints.get("token_id_maps", {}).get("idx_to_token", {}) if constraints else {}
+            idx_to_token = (
+                constraints.get("token_id_maps", {}).get("idx_to_token", {})
+                if constraints
+                else {}
+            )
 
         continuous_predictions = (
             {"lattice_lengths": [], "lattice_angles": [], "fractional_coords": []}
-            if use_continuous_predictions
+            if self.config.prediction_mode == "continuous"
             else None
         )
 
@@ -982,7 +987,7 @@ class HierarchicalCrystalTransformer(nn.Module):
                 use_causal_mask=True,
             )
 
-            if use_continuous_predictions:
+            if self.config.prediction_mode == "continuous":
                 if "lattice_lengths" in outputs and "lattice_angles" in outputs:
                     continuous_predictions["lattice_lengths"].append(
                         outputs["lattice_lengths"]
@@ -1066,16 +1071,34 @@ class HierarchicalCrystalTransformer(nn.Module):
             next_tokens = next_tokens * unfinished_sequences + pad_token_id * (
                 ~unfinished_sequences
             )
-            
-            if verbose and (generated_ids.shape[1] % 10 == 0 or generated_ids.shape[1] < 10):
+
+            if verbose and (
+                generated_ids.shape[1] % 10 == 0 or generated_ids.shape[1] < 10
+            ):
                 # Log every 10 tokens or the first few tokens
-                for i in range(min(batch_size, 2)):  # Only show first 2 sequences to avoid clutter
+                for i in range(
+                    min(batch_size, 2)
+                ):  # Only show first 2 sequences to avoid clutter
                     token_id = next_tokens[i].item()
                     token_name = idx_to_token.get(str(token_id), f"<{token_id}>")
                     current_seg = segment_ids[i, -1].item()
-                    segment_names = ["SPECIAL", "COMPOSITION", "SPACE_GROUP", "LATTICE", "ELEMENT", "WYCKOFF", "COORDINATE"]
-                    seg_name = segment_names[current_seg] if current_seg < len(segment_names) else f"SEG_{current_seg}"
-                    print(f"Seq {i}, Pos {generated_ids.shape[1]}: Generated token {token_id} ({token_name}) - Current segment: {seg_name}")
+                    segment_names = [
+                        "SPECIAL",
+                        "COMPOSITION",
+                        "SPACE_GROUP",
+                        "LATTICE",
+                        "ELEMENT",
+                        "WYCKOFF",
+                        "COORDINATE",
+                    ]
+                    seg_name = (
+                        segment_names[current_seg]
+                        if current_seg < len(segment_names)
+                        else f"SEG_{current_seg}"
+                    )
+                    print(
+                        f"Seq {i}, Pos {generated_ids.shape[1]}: Generated token {token_id} ({token_name}) - Current segment: {seg_name}"
+                    )
 
             next_segments = self._predict_next_segment_id(
                 generated_ids, generated_segments, next_tokens
@@ -1102,9 +1125,12 @@ class HierarchicalCrystalTransformer(nn.Module):
         # Track if we got continuous predictions
         has_continuous_lattice = False
         has_continuous_coords = False
-        
-        if use_continuous_predictions and continuous_predictions:
-            if continuous_predictions["lattice_lengths"] and len(continuous_predictions["lattice_lengths"]) > 0:
+
+        if self.config.prediction_mode == "continuous" and continuous_predictions:
+            if (
+                continuous_predictions["lattice_lengths"]
+                and len(continuous_predictions["lattice_lengths"]) > 0
+            ):
                 # Combine all predictions - for generation we want the last one for each sequence
                 try:
                     result["continuous_lattice_lengths"] = torch.cat(
@@ -1114,41 +1140,64 @@ class HierarchicalCrystalTransformer(nn.Module):
                         continuous_predictions["lattice_angles"], dim=0
                     )
                     has_continuous_lattice = True
-                    
-                    if verbose:
-                        print(f"Successfully captured continuous lattice predictions with shape: {result['continuous_lattice_lengths'].shape}")
-                except Exception as e:
-                    print(f"Warning: Failed to process continuous lattice predictions: {e}")
 
-            if continuous_predictions["fractional_coords"] and len(continuous_predictions["fractional_coords"]) > 0:
+                    if verbose:
+                        print(
+                            f"Successfully captured continuous lattice predictions with shape: {result['continuous_lattice_lengths'].shape}"
+                        )
+                except Exception as e:
+                    print(
+                        f"Warning: Failed to process continuous lattice predictions: {e}"
+                    )
+
+            if (
+                continuous_predictions["fractional_coords"]
+                and len(continuous_predictions["fractional_coords"]) > 0
+            ):
                 try:
                     result["continuous_fractional_coords"] = torch.cat(
                         continuous_predictions["fractional_coords"], dim=0
                     )
                     has_continuous_coords = True
-                    
+
                     if verbose:
-                        print(f"Successfully captured continuous coordinate predictions with shape: {result['continuous_fractional_coords'].shape}")
+                        print(
+                            f"Successfully captured continuous coordinate predictions with shape: {result['continuous_fractional_coords'].shape}"
+                        )
                 except Exception as e:
-                    print(f"Warning: Failed to process continuous coordinate predictions: {e}")
-        
+                    print(
+                        f"Warning: Failed to process continuous coordinate predictions: {e}"
+                    )
+
         # Add flags to indicate whether continuous predictions were successfully obtained
         result["has_continuous_lattice"] = has_continuous_lattice
         result["has_continuous_coords"] = has_continuous_coords
-        
+
         if verbose:
             # Print segment type distribution
             segment_counts = {}
             for i in range(generated_segments.size(1)):
                 seg_id = generated_segments[0, i].item()  # Look at first sequence
                 segment_counts[seg_id] = segment_counts.get(seg_id, 0) + 1
-                
-            segment_names = ["SPECIAL", "COMPOSITION", "SPACE_GROUP", "LATTICE", "ELEMENT", "WYCKOFF", "COORDINATE"]
+
+            segment_names = [
+                "SPECIAL",
+                "COMPOSITION",
+                "SPACE_GROUP",
+                "LATTICE",
+                "ELEMENT",
+                "WYCKOFF",
+                "COORDINATE",
+            ]
             print("\nGeneration summary:")
             print(f"Final sequence length: {generated_ids.shape[1]}")
             print("Segment distribution:")
             for seg_id, count in segment_counts.items():
-                seg_name = segment_names[seg_id] if seg_id < len(segment_names) else f"SEG_{seg_id}"
+                seg_name = (
+                    segment_names[seg_id]
+                    if seg_id < len(segment_names)
+                    else f"SEG_{seg_id}"
+                )
                 print(f"  {seg_name}: {count} tokens")
             print(f"Used continuous lattice predictions: {has_continuous_lattice}")
             print(f"Used continuous coordinate predictions: {has_continuous_coords}")

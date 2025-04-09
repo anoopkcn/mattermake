@@ -35,9 +35,8 @@ composition_curriculum_epochs: 5
 space_group_curriculum_epochs: 5
 lattice_curriculum_epochs: 5
 
-# Continuous prediction settings
-use_continuous_predictions: true
-continuous_regression_weight: 0.5  # Weighting for regression losses relative to classification losses
+# Prediction mode: "discrete" or "continuous"
+prediction_mode: "continuous"
 
-# Disable discrete coordinate head to save memory and avoid overflow
-use_discrete_coordinate_head: false  # Skip creating the enormous output layer
+# Weighting for regression losses relative to classification losses
+continuous_regression_weight: 0.5

@@ -37,7 +37,7 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         atom_layers: int = 6,
         integration_layers: int = 2,
         coordinate_embedding_dim: int = 32,  # Added parameter for coordinate embedding dimension
-        use_discrete_coordinate_head: bool = True,  # Whether to use the discrete coordinate head
+        prediction_mode: str = "discrete",  # Mode for predictions: "discrete" or "continuous"
         tokenizer_config: Optional[Dict[str, Any]] = None,
     ):
         super().__init__()
@@ -65,7 +65,7 @@ class HierarchicalCrystalTransformerModule(LightningModule):
             space_group_curriculum_epochs=space_group_curriculum_epochs,
             lattice_curriculum_epochs=lattice_curriculum_epochs,
             coordinate_embedding_dim=coordinate_embedding_dim,
-            use_discrete_coordinate_head=use_discrete_coordinate_head,
+            prediction_mode=prediction_mode,
         )
 
         self.model = HierarchicalCrystalTransformer(config)
@@ -334,7 +334,7 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         top_k: Optional[int] = 40,
         top_p: Optional[float] = 0.9,
         num_return_sequences: int = 1,
-        use_continuous_predictions: bool = True,
+        verbose: bool = False,
         **kwargs,
     ) -> List[Dict[str, Any]]:
         """
@@ -348,6 +348,7 @@ class HierarchicalCrystalTransformerModule(LightningModule):
             top_k: If set, sample from top k most likely tokens
             top_p: If set, sample from tokens with cumulative probability >= top_p
             num_return_sequences: Number of sequences to generate
+            verbose: Whether to print verbose output during generation
 
         Returns:
             List of generated structures with their token sequences
@@ -397,7 +398,7 @@ class HierarchicalCrystalTransformerModule(LightningModule):
                 repetition_penalty=1.2,
                 eos_token_id=1,  # Assuming EOS token is 1
                 pad_token_id=2,  # Assuming PAD token is 2
-                use_continuous_predictions=use_continuous_predictions,
+                verbose=verbose,
             )
 
         # Parse generated sequences
@@ -408,7 +409,7 @@ class HierarchicalCrystalTransformerModule(LightningModule):
             
             # Get continuous predictions if available
             continuous_data = {}
-            if use_continuous_predictions:
+            if self.model.config.prediction_mode == "continuous":
                 # Extract continuous lattice parameters if available
                 if "continuous_lattice_lengths" in outputs and "continuous_lattice_angles" in outputs:
                     # Get the values for this sequence

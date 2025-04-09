@@ -70,15 +70,9 @@ def train(config: DictConfig) -> Optional[float]:
             "coordinate_precision": tokenizer.coordinate_precision,
         }
         
-    # Configure continuous prediction settings
-    if hasattr(config, "continuous_predictions") and config.continuous_predictions:
-        log.info("Enabling continuous predictions for lattice parameters and coordinates")
-        
-        # Disable discrete coordinate head when using continuous predictions
-        # This saves memory and prevents potential integer overflow
-        if hasattr(model.model.config, "use_discrete_coordinate_head"):
-            log.info("Disabling discrete coordinate head to save memory")
-            model.model.config.use_discrete_coordinate_head = False
+    # Configure ground truth hook for continuous regression losses
+    if config.model.prediction_mode == "continuous":
+        log.info("Setting up continuous regression loss hooks for continuous mode")
         
         # Set ground truth values from batch data during training
         def prepare_ground_truth_hook(pl_module, batch):

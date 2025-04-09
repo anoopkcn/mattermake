@@ -18,9 +18,6 @@ task_name: "train_crystal_transformer"
 # tags to help you identify your experiments
 tags: ["crystal-transformer", "materials-generation"]
 
-# Enable continuous predictions for lattice parameters and coordinates
-continuous_predictions: true
-
 # Weight for continuous regression losses relative to classification losses
 continuous_regression_weight: 0.5
 

@@ -56,7 +56,7 @@ def load_model_from_checkpoint(checkpoint_path, vocab_size=None, use_continuous=
         model = HierarchicalCrystalTransformerModule(
             vocab_size=vocab_size,
             coordinate_embedding_dim=4,  # Reduced from default (32) to avoid overflow
-            use_discrete_coordinate_head=not use_continuous,  # Disable discrete head when using continuous predictions
+            prediction_mode="continuous" if use_continuous else "discrete",  # Set prediction mode based on parameter
         )
         return model
 
@@ -112,7 +112,6 @@ def generate_structures(
         temperature=temperature,
         top_k=top_k,
         top_p=top_p,
-        use_continuous_predictions=use_continuous,
         verbose=verbose,
     )
 

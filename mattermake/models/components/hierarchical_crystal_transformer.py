@@ -818,7 +818,11 @@ class HierarchicalCrystalTransformer(nn.Module):
                         batch_size = coordinate_hidden.size(0)
 
                         # Handle coordinate predictions based on prediction mode
-                        if self.config.prediction_mode == "discrete" and hasattr(self, "coordinate_head") and self.coordinate_head is not None:
+                        if (
+                            self.config.prediction_mode == "discrete"
+                            and hasattr(self, "coordinate_head")
+                            and self.coordinate_head is not None
+                        ):
                             try:
                                 coordinate_logits = self.coordinate_head(
                                     coordinate_hidden
@@ -912,6 +916,47 @@ class HierarchicalCrystalTransformer(nn.Module):
                 if torch.any(atom_mask):
                     outputs["atom_hidden_states"] = hidden_states[atom_mask]
 
+        # For generation in continuous mode, ensure lattice and coordinate predictions are included
+        # even if the right segments weren't encountered during this forward pass
+        if not self.training and self.config.prediction_mode == "continuous":
+            # Check if continuous predictions are missing and we need to add them
+            if ("lattice" in self.active_modules and 
+                "lattice_lengths" not in outputs and 
+                "lattice_angles" not in outputs):
+                
+                # Find if there are any lattice tokens in the input
+                lattice_mask = (safe_segment_ids == self.config.SEGMENT_LATTICE)
+                
+                # If no lattice tokens, use the last hidden state to generate predictions
+                if not torch.any(lattice_mask):
+                    # Use the last token's hidden state for prediction
+                    last_hidden = hidden_states[:, -1]
+                    
+                    # Generate lattice predictions
+                    raw_lattice_lengths = self.lattice_length_head(last_hidden)
+                    raw_lattice_angles = self.lattice_angle_head(last_hidden)
+                    
+                    lattice_lengths = bound_lattice_lengths(raw_lattice_lengths)
+                    lattice_angles = bound_lattice_angles(raw_lattice_angles)
+                    
+                    outputs["lattice_lengths"] = lattice_lengths
+                    outputs["lattice_angles"] = lattice_angles
+            
+            # Similarly for coordinate predictions
+            if ("atoms" in self.active_modules and
+                "fractional_coords" not in outputs):
+                
+                coordinate_mask = (safe_segment_ids == self.config.SEGMENT_COORDINATE)
+                
+                if not torch.any(coordinate_mask):
+                    # Use the last token's hidden state
+                    last_hidden = hidden_states[:, -1].unsqueeze(0)
+                    
+                    # Generate coordinate predictions (simplified)
+                    raw_coords = self.fractional_coord_head(last_hidden)
+                    fractional_coords = bound_fractional_coords(raw_coords)
+                    outputs["fractional_coords"] = fractional_coords
+        
         return outputs
 
     @torch.no_grad()
@@ -972,6 +1017,10 @@ class HierarchicalCrystalTransformer(nn.Module):
             else None
         )
 
+        if verbose:
+            print(f"Prediction mode: {self.config.prediction_mode}")
+            print(f"Active modules: {self.active_modules}")
+
         unfinished_sequences = torch.ones(batch_size, dtype=torch.bool, device=device)
 
         # Initialize constraint handler (if provided)
@@ -980,25 +1029,57 @@ class HierarchicalCrystalTransformer(nn.Module):
         # )
         constraint_handler = None
         while True:
+            # Make sure all modules are active during generation in continuous mode
+            if self.config.prediction_mode == "continuous" and hasattr(self, 'active_modules'):
+                # Store original active modules to restore later
+                original_active_modules = self.active_modules.copy() if self.active_modules else []
+                # Ensure all necessary modules are active for continuous prediction
+                self.active_modules = ["composition", "space_group", "lattice", "atoms"]
+                
+                if verbose and len(original_active_modules) != len(self.active_modules):
+                    print(f"Setting active_modules for generation: {self.active_modules}")
+            
             outputs = self.forward(
                 input_ids=generated_ids,
                 segment_ids=generated_segments,
                 attention_mask=attention_mask,
                 use_causal_mask=True,
             )
+            
+            # Restore original active modules
+            if self.config.prediction_mode == "continuous" and hasattr(self, 'active_modules'):
+                self.active_modules = original_active_modules
+                if verbose:
+                    print(f"Restored active_modules: {self.active_modules}")
 
             if self.config.prediction_mode == "continuous":
                 if "lattice_lengths" in outputs and "lattice_angles" in outputs:
+                    if verbose:
+                        print(
+                            f"Found lattice predictions: lengths={outputs['lattice_lengths'].shape}, angles={outputs['lattice_angles'].shape}"
+                        )
                     continuous_predictions["lattice_lengths"].append(
                         outputs["lattice_lengths"]
                     )
                     continuous_predictions["lattice_angles"].append(
                         outputs["lattice_angles"]
                     )
+                elif verbose and self.config.prediction_mode == "continuous":
+                    print(
+                        f"Missing lattice predictions in output keys: {list(outputs.keys())}"
+                    )
 
                 if "fractional_coords" in outputs:
+                    if verbose:
+                        print(
+                            f"Found coordinate predictions: coords={outputs['fractional_coords'].shape}"
+                        )
                     continuous_predictions["fractional_coords"].append(
                         outputs["fractional_coords"]
+                    )
+                elif verbose and self.config.prediction_mode == "continuous":
+                    print(
+                        f"Missing coordinate predictions in output keys: {list(outputs.keys())}"
                     )
 
             next_token_logits = outputs["logits"][:, -1, :]
@@ -1127,12 +1208,31 @@ class HierarchicalCrystalTransformer(nn.Module):
         has_continuous_coords = False
 
         if self.config.prediction_mode == "continuous" and continuous_predictions:
+            if verbose:
+                print("Processing continuous predictions")
+                print(
+                    f"Lattice lengths collected: {len(continuous_predictions['lattice_lengths'])}"
+                )
+                print(
+                    f"Lattice angles collected: {len(continuous_predictions['lattice_angles'])}"
+                )
+                print(
+                    f"Fractional coords collected: {len(continuous_predictions['fractional_coords'])}"
+                )
+
             if (
                 continuous_predictions["lattice_lengths"]
                 and len(continuous_predictions["lattice_lengths"]) > 0
             ):
                 # Combine all predictions - for generation we want the last one for each sequence
                 try:
+                    # For debugging, examine the shapes before concatenation
+                    if verbose:
+                        for i, tensor in enumerate(
+                            continuous_predictions["lattice_lengths"]
+                        ):
+                            print(f"Lattice length tensor {i} shape: {tensor.shape}")
+
                     result["continuous_lattice_lengths"] = torch.cat(
                         continuous_predictions["lattice_lengths"], dim=0
                     )
@@ -1145,9 +1245,21 @@ class HierarchicalCrystalTransformer(nn.Module):
                         print(
                             f"Successfully captured continuous lattice predictions with shape: {result['continuous_lattice_lengths'].shape}"
                         )
+                        print(
+                            f"Lattice lengths range: {result['continuous_lattice_lengths'].min().item():.3f} to {result['continuous_lattice_lengths'].max().item():.3f}"
+                        )
+                        print(
+                            f"Lattice angles range: {result['continuous_lattice_angles'].min().item():.3f} to {result['continuous_lattice_angles'].max().item():.3f}"
+                        )
                 except Exception as e:
                     print(
                         f"Warning: Failed to process continuous lattice predictions: {e}"
+                    )
+                    print(
+                        f"Tensor shapes: {[t.shape for t in continuous_predictions['lattice_lengths']]}"
+                    )
+                    print(
+                        f"Tensor devices: {[t.device for t in continuous_predictions['lattice_lengths']]}"
                     )
 
             if (
@@ -1155,6 +1267,13 @@ class HierarchicalCrystalTransformer(nn.Module):
                 and len(continuous_predictions["fractional_coords"]) > 0
             ):
                 try:
+                    # For debugging, examine the shapes before concatenation
+                    if verbose:
+                        for i, tensor in enumerate(
+                            continuous_predictions["fractional_coords"]
+                        ):
+                            print(f"Coordinate tensor {i} shape: {tensor.shape}")
+
                     result["continuous_fractional_coords"] = torch.cat(
                         continuous_predictions["fractional_coords"], dim=0
                     )
@@ -1164,14 +1283,28 @@ class HierarchicalCrystalTransformer(nn.Module):
                         print(
                             f"Successfully captured continuous coordinate predictions with shape: {result['continuous_fractional_coords'].shape}"
                         )
+                        print(
+                            f"Coordinate values range: {result['continuous_fractional_coords'].min().item():.3f} to {result['continuous_fractional_coords'].max().item():.3f}"
+                        )
                 except Exception as e:
                     print(
                         f"Warning: Failed to process continuous coordinate predictions: {e}"
+                    )
+                    print(
+                        f"Tensor shapes: {[t.shape for t in continuous_predictions['fractional_coords']]}"
+                    )
+                    print(
+                        f"Tensor devices: {[t.device for t in continuous_predictions['fractional_coords']]}"
                     )
 
         # Add flags to indicate whether continuous predictions were successfully obtained
         result["has_continuous_lattice"] = has_continuous_lattice
         result["has_continuous_coords"] = has_continuous_coords
+
+        if verbose:
+            print(
+                f"Final results - has_continuous_lattice: {has_continuous_lattice}, has_continuous_coords: {has_continuous_coords}"
+            )
 
         if verbose:
             # Print segment type distribution

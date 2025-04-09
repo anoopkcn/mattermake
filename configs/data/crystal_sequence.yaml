@@ -1,6 +1,6 @@
 _target_: mattermake.data.crystal_sequence_datamodule.CrystalSequenceDataModule
 
-data_dir: ${paths.data_dir}/crystal_data
+data_dir: ${paths.data_dir}/structure_tokens
 processed_data_file: "processed_crystal_data.pt"
 batch_size: 16
 num_workers: 4

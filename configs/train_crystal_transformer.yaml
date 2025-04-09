@@ -3,7 +3,7 @@
 defaults:
   - _self_
   - data: crystal_sequence.yaml
-  - model: crystal_transformer.yaml
+  - model:  continuous_crystal_transformer.yaml
   - callbacks: default.yaml
   - logger: wandb.yaml
   - trainer: default.yaml
@@ -19,7 +19,7 @@ task_name: "train_crystal_transformer"
 tags: ["crystal-transformer", "materials-generation"]
 
 # Enable continuous predictions for lattice parameters and coordinates
-continuous_predictions: false  # Set to true to enable
+continuous_predictions: true
 
 # Weight for continuous regression losses relative to classification losses
 continuous_regression_weight: 0.5

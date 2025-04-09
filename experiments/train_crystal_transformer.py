@@ -78,6 +78,18 @@ def train(config: DictConfig) -> Optional[float]:
         def prepare_ground_truth_hook(pl_module, batch):
             # This hook extracts ground truth values from the batch data
             # and sets them in the model for regression loss calculation
+            
+            # Handle the case where pl_module might be a dict (happens in some distributed training scenarios)
+            if isinstance(pl_module, dict):
+                log.warning("pl_module is a dictionary instead of a LightningModule object")
+                return
+                
+            # Make sure pl_module has a model attribute
+            if not hasattr(pl_module, "model"):
+                log.warning("pl_module does not have a model attribute")
+                return
+                
+            # Now we can safely access the model
             if hasattr(pl_module.model, "set_ground_truth_values"):
                 # Extract lattice parameters and coordinates from the batch
                 # This requires adapting your dataloader to provide this information

@@ -92,6 +92,9 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         outputs = self(batch)
         loss = outputs["loss"]
 
+        # Get batch size for logging
+        batch_size = len(batch["input_ids"])
+
         self.log(
             "train_loss",
             loss,
@@ -99,19 +102,20 @@ class HierarchicalCrystalTransformerModule(LightningModule):
             on_epoch=True,
             prog_bar=True,
             sync_dist=True,
+            batch_size=batch_size,
         )
 
         # Log component-specific losses if available
         if "space_group_loss" in outputs:
-            self.log("train_sg_loss", outputs["space_group_loss"], on_epoch=True, sync_dist=True)
+            self.log("train_sg_loss", outputs["space_group_loss"], on_epoch=True, sync_dist=True, batch_size=batch_size)
         if "lattice_loss" in outputs:
-            self.log("train_lattice_loss", outputs["lattice_loss"], on_epoch=True, sync_dist=True)
+            self.log("train_lattice_loss", outputs["lattice_loss"], on_epoch=True, sync_dist=True, batch_size=batch_size)
         if "element_loss" in outputs:
-            self.log("train_element_loss", outputs["element_loss"], on_epoch=True, sync_dist=True)
+            self.log("train_element_loss", outputs["element_loss"], on_epoch=True, sync_dist=True, batch_size=batch_size)
         if "wyckoff_loss" in outputs:
-            self.log("train_wyckoff_loss", outputs["wyckoff_loss"], on_epoch=True, sync_dist=True)
+            self.log("train_wyckoff_loss", outputs["wyckoff_loss"], on_epoch=True, sync_dist=True, batch_size=batch_size)
         if "coordinate_loss" in outputs:
-            self.log("train_coordinate_loss", outputs["coordinate_loss"], on_epoch=True, sync_dist=True)
+            self.log("train_coordinate_loss", outputs["coordinate_loss"], on_epoch=True, sync_dist=True, batch_size=batch_size)
 
         return loss
 
@@ -120,19 +124,22 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         outputs = self(batch)
         loss = outputs["loss"]
 
-        self.log("val_loss", loss, on_epoch=True, prog_bar=True, sync_dist=True)
+        # Get batch size for logging
+        batch_size = len(batch["input_ids"])
+
+        self.log("val_loss", loss, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=batch_size)
         
         # Log component-specific validation losses if available
         if "space_group_loss" in outputs:
-            self.log("val_sg_loss", outputs["space_group_loss"], on_epoch=True, sync_dist=True)
+            self.log("val_sg_loss", outputs["space_group_loss"], on_epoch=True, sync_dist=True, batch_size=batch_size)
         if "lattice_loss" in outputs:
-            self.log("val_lattice_loss", outputs["lattice_loss"], on_epoch=True, sync_dist=True)
+            self.log("val_lattice_loss", outputs["lattice_loss"], on_epoch=True, sync_dist=True, batch_size=batch_size)
         if "element_loss" in outputs:
-            self.log("val_element_loss", outputs["element_loss"], on_epoch=True, sync_dist=True)
+            self.log("val_element_loss", outputs["element_loss"], on_epoch=True, sync_dist=True, batch_size=batch_size)
         if "wyckoff_loss" in outputs:
-            self.log("val_wyckoff_loss", outputs["wyckoff_loss"], on_epoch=True, sync_dist=True)
+            self.log("val_wyckoff_loss", outputs["wyckoff_loss"], on_epoch=True, sync_dist=True, batch_size=batch_size)
         if "coordinate_loss" in outputs:
-            self.log("val_coordinate_loss", outputs["coordinate_loss"], on_epoch=True, sync_dist=True)
+            self.log("val_coordinate_loss", outputs["coordinate_loss"], on_epoch=True, sync_dist=True, batch_size=batch_size)
 
         # Calculate token-level accuracy
         logits = outputs["logits"]
@@ -151,9 +158,12 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         )  # Ignore -100 and pad token
         correct = (preds == shift_labels) & valid_mask
 
+        # Get the batch size for logging
+        batch_size = len(batch["input_ids"])
+
         # Calculate accuracy
         accuracy = correct.sum().float() / (valid_mask.sum().float() + 1e-8)
-        self.log("val_accuracy", accuracy, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val_accuracy", accuracy, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=batch_size)
 
         # Calculate accuracy by segment type
         segment_ids = batch["segment_ids"]
@@ -166,14 +176,14 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         if comp_mask.sum() > 0:
             comp_correct = ((preds == shift_labels) & comp_mask).sum().float()
             comp_accuracy = comp_correct / (comp_mask.sum().float() + 1e-8)
-            self.log("val_comp_accuracy", comp_accuracy, on_epoch=True)
+            self.log("val_comp_accuracy", comp_accuracy, on_epoch=True, sync_dist=True, batch_size=batch_size)
 
         # Space group accuracy
         sg_mask = (shift_segments == self.model.config.SEGMENT_SPACE_GROUP) & valid_mask
         if sg_mask.sum() > 0:
             sg_correct = ((preds == shift_labels) & sg_mask).sum().float()
             sg_accuracy = sg_correct / (sg_mask.sum().float() + 1e-8)
-            self.log("val_sg_accuracy", sg_accuracy, on_epoch=True)
+            self.log("val_sg_accuracy", sg_accuracy, on_epoch=True, sync_dist=True, batch_size=batch_size)
 
         # Lattice accuracy
         lattice_mask = (
@@ -182,7 +192,7 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         if lattice_mask.sum() > 0:
             lattice_correct = ((preds == shift_labels) & lattice_mask).sum().float()
             lattice_accuracy = lattice_correct / (lattice_mask.sum().float() + 1e-8)
-            self.log("val_lattice_accuracy", lattice_accuracy, on_epoch=True)
+            self.log("val_lattice_accuracy", lattice_accuracy, on_epoch=True, sync_dist=True, batch_size=batch_size)
 
         # Atom accuracy (element, wyckoff, coordinate)
         atom_mask = (
@@ -193,26 +203,26 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         if atom_mask.sum() > 0:
             atom_correct = ((preds == shift_labels) & atom_mask).sum().float()
             atom_accuracy = atom_correct / (atom_mask.sum().float() + 1e-8)
-            self.log("val_atom_accuracy", atom_accuracy, on_epoch=True)
+            self.log("val_atom_accuracy", atom_accuracy, on_epoch=True, sync_dist=True, batch_size=batch_size)
             
         # Break down atom accuracy into element, Wyckoff, and coordinate accuracies
         element_mask = (shift_segments == self.model.config.SEGMENT_ELEMENT) & valid_mask
         if element_mask.sum() > 0:
             element_correct = ((preds == shift_labels) & element_mask).sum().float()
             element_accuracy = element_correct / (element_mask.sum().float() + 1e-8)
-            self.log("val_element_accuracy", element_accuracy, on_epoch=True)
+            self.log("val_element_accuracy", element_accuracy, on_epoch=True, sync_dist=True, batch_size=batch_size)
             
         wyckoff_mask = (shift_segments == self.model.config.SEGMENT_WYCKOFF) & valid_mask
         if wyckoff_mask.sum() > 0:
             wyckoff_correct = ((preds == shift_labels) & wyckoff_mask).sum().float()
             wyckoff_accuracy = wyckoff_correct / (wyckoff_mask.sum().float() + 1e-8)
-            self.log("val_wyckoff_accuracy", wyckoff_accuracy, on_epoch=True)
+            self.log("val_wyckoff_accuracy", wyckoff_accuracy, on_epoch=True, sync_dist=True, batch_size=batch_size)
             
         coordinate_mask = (shift_segments == self.model.config.SEGMENT_COORDINATE) & valid_mask
         if coordinate_mask.sum() > 0:
             coordinate_correct = ((preds == shift_labels) & coordinate_mask).sum().float()
             coordinate_accuracy = coordinate_correct / (coordinate_mask.sum().float() + 1e-8)
-            self.log("val_coordinate_accuracy", coordinate_accuracy, on_epoch=True)
+            self.log("val_coordinate_accuracy", coordinate_accuracy, on_epoch=True, sync_dist=True, batch_size=batch_size)
 
         return loss
 
@@ -221,7 +231,10 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         outputs = self(batch)
         loss = outputs["loss"]
 
-        self.log("test_loss", loss, on_epoch=True)
+        # Get batch size for logging
+        batch_size = len(batch["input_ids"])
+
+        self.log("test_loss", loss, on_epoch=True, sync_dist=True, batch_size=batch_size)
         return loss
 
     def configure_optimizers(self):
@@ -334,6 +347,7 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         temperature: float = 0.8,
         top_k: Optional[int] = 40,
         top_p: Optional[float] = 0.9,
+        repetition_penalty: float = 1.2,
         num_return_sequences: int = 1,
         verbose: bool = False,
         **kwargs,
@@ -396,7 +410,7 @@ class HierarchicalCrystalTransformerModule(LightningModule):
                 temperature=temperature,
                 top_k=top_k,
                 top_p=top_p,
-                repetition_penalty=1.2,
+                repetition_penalty=repetition_penalty,
                 eos_token_id=1,  # Assuming EOS token is 1
                 pad_token_id=2,  # Assuming PAD token is 2
                 verbose=verbose,

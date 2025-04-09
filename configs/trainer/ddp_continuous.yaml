@@ -1,0 +1,10 @@
+defaults:
+  - default
+
+strategy: ddp_find_unused_parameters_true
+
+accelerator: gpu
+devices: 4
+# Set to your actual node count
+num_nodes: 2
+sync_batchnorm: True

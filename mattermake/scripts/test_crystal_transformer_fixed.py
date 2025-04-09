@@ -123,6 +123,7 @@ def generate_structures(
         if hasattr(model.model, 'fractional_coord_head'):
             logger.info("Model has fractional_coord_head")
 
+    # Use more controlled generation parameters to ensure complete structures
     structures = model.generate_structure(
         num_return_sequences=num_structures,
         temperature=temperature,
@@ -131,6 +132,8 @@ def generate_structures(
         verbose=verbose,
         # Set max_length longer to ensure we generate complete structures
         max_length=1024,
+        # Use lower repetition penalty to allow repetition of element/coordinate tokens
+        repetition_penalty=1.05,
     )
     
     # Check if any continuous predictions were generated

@@ -36,6 +36,8 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         lattice_layers: int = 3,
         atom_layers: int = 6,
         integration_layers: int = 2,
+        coordinate_embedding_dim: int = 32,  # Added parameter for coordinate embedding dimension
+        use_discrete_coordinate_head: bool = True,  # Whether to use the discrete coordinate head
         tokenizer_config: Optional[Dict[str, Any]] = None,
     ):
         super().__init__()
@@ -62,6 +64,8 @@ class HierarchicalCrystalTransformerModule(LightningModule):
             composition_curriculum_epochs=composition_curriculum_epochs,
             space_group_curriculum_epochs=space_group_curriculum_epochs,
             lattice_curriculum_epochs=lattice_curriculum_epochs,
+            coordinate_embedding_dim=coordinate_embedding_dim,
+            use_discrete_coordinate_head=use_discrete_coordinate_head,
         )
 
         self.model = HierarchicalCrystalTransformer(config)

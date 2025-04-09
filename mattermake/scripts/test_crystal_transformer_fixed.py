@@ -21,8 +21,14 @@ torch.serialization.add_safe_globals([CrystalTokenData])
 logger = get_pylogger(__name__)
 
 
-def load_model_from_checkpoint(checkpoint_path, vocab_size=None):
-    """Load a model from checkpoint"""
+def load_model_from_checkpoint(checkpoint_path, vocab_size=None, use_continuous=False):
+    """Load a model from checkpoint
+    
+    Args:
+        checkpoint_path: Path to the checkpoint file
+        vocab_size: Vocabulary size for the model
+        use_continuous: Whether to use continuous predictions for coordinates and lattice
+    """
     if checkpoint_path is not None and os.path.exists(checkpoint_path):
         logger.info(f"Loading model from checkpoint: {checkpoint_path}")
         model = HierarchicalCrystalTransformerModule.load_from_checkpoint(
@@ -39,10 +45,11 @@ def load_model_from_checkpoint(checkpoint_path, vocab_size=None):
             raise ValueError(
                 "vocab_size must be provided when initializing a new model"
             )
-        # Use a smaller coordinate_embedding_dim to avoid overflow
+        # Configure the model to prevent integer overflow with coordinate_embedding_dim
         model = HierarchicalCrystalTransformerModule(
             vocab_size=vocab_size,
-            coordinate_embedding_dim=4  # Reduced from default (likely 32) to avoid overflow
+            coordinate_embedding_dim=4,  # Reduced from default (32) to avoid overflow
+            use_discrete_coordinate_head=not use_continuous  # Disable discrete head when using continuous predictions
         )
         return model
 
@@ -281,7 +288,11 @@ def main():
     vocab_size = tokenizer.vocab_size if tokenizer else 2000  # Default if not available
 
     # Load or initialize model
-    model = load_model_from_checkpoint(args.checkpoint, vocab_size=vocab_size)
+    model = load_model_from_checkpoint(
+        args.checkpoint, 
+        vocab_size=vocab_size,
+        use_continuous=args.continuous
+    )
 
     # Set tokenizer config in the model for proper decoding
     if tokenizer:

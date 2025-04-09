@@ -38,6 +38,7 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         integration_layers: int = 2,
         coordinate_embedding_dim: int = 32,  # Added parameter for coordinate embedding dimension
         prediction_mode: str = "discrete",  # Mode for predictions: "discrete" or "continuous"
+        continuous_regression_weight: float = 0.5,  # Weight for continuous regression losses
         tokenizer_config: Optional[Dict[str, Any]] = None,
     ):
         super().__init__()

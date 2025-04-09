@@ -69,6 +69,32 @@ def train(config: DictConfig) -> Optional[float]:
             "lattice_bins": tokenizer.lattice_bins,
             "coordinate_precision": tokenizer.coordinate_precision,
         }
+        
+    # Configure continuous prediction settings
+    if hasattr(config, "continuous_predictions") and config.continuous_predictions:
+        log.info("Enabling continuous predictions for lattice parameters and coordinates")
+        
+        # Disable discrete coordinate head when using continuous predictions
+        # This saves memory and prevents potential integer overflow
+        if hasattr(model.model.config, "use_discrete_coordinate_head"):
+            log.info("Disabling discrete coordinate head to save memory")
+            model.model.config.use_discrete_coordinate_head = False
+        
+        # Set ground truth values from batch data during training
+        def prepare_ground_truth_hook(pl_module, batch):
+            # This hook extracts ground truth values from the batch data
+            # and sets them in the model for regression loss calculation
+            if hasattr(pl_module.model, "set_ground_truth_values"):
+                # Extract lattice parameters and coordinates from the batch
+                # This requires adapting your dataloader to provide this information
+                if "ground_truth_lattice" in batch:
+                    pl_module.model.set_ground_truth_values(
+                        lattice_params=batch["ground_truth_lattice"],
+                        fractional_coords=batch.get("ground_truth_coords")
+                    )
+                    
+        # Register the hook with the model
+        model.on_train_batch_start = prepare_ground_truth_hook
 
     log.info(f"Instantiating trainer <{config.trainer._target_}>")
     trainer: Trainer = hydra.utils.instantiate(

@@ -24,10 +24,13 @@ srun --gres=gpu:4 --nodes=${SLURM_JOB_NUM_NODES} --ntasks-per-node=4 --cpu-bind=
     cd /p/project1/hai_solaihack/chandran1/mattermake
 
     # Run training with Hydra configuration
-    python train_crystal_transformer.py \
+    python experiments/train_crystal_transformer.py \
         trainer.max_epochs=100 \
         trainer.num_nodes=$SLURM_JOB_NUM_NODES \
         trainer.devices=4 \
         data.batch_size=32 \
-        data.num_workers=4
+        data.num_workers=4 \
+        continuous_predictions=true \
+        +continuous_regression_weight=0.5 \
+        logger.wandb.name="continuous_crystal_transformer"
 "

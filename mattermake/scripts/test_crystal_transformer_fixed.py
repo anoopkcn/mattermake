@@ -76,7 +76,7 @@ def train_model(model, data_module, max_epochs=5, gpus=1):
 
 
 def generate_structures(
-    model, num_structures=5, temperature=0.8, top_k=40, top_p=0.9, use_continuous=True
+    model, num_structures=5, temperature=0.8, top_k=40, top_p=0.9, use_continuous=True, verbose=False
 ):
     """Generate crystal structures using the trained model
 
@@ -87,6 +87,7 @@ def generate_structures(
         top_k: If set, sample from top k most likely tokens
         top_p: If set, sample from tokens with cumulative probability >= top_p
         use_continuous: Whether to use continuous predictions for lattice parameters and coordinates
+        verbose: Whether to print detailed debugging information during generation
 
     Returns:
         List of generated structures
@@ -95,6 +96,8 @@ def generate_structures(
     logger.info(
         f"Using {'continuous' if use_continuous else 'discrete'} predictions for lattice and coordinates"
     )
+    if verbose:
+        logger.info("Detailed generation debugging is enabled")
 
     structures = model.generate_structure(
         num_return_sequences=num_structures,
@@ -102,6 +105,7 @@ def generate_structures(
         top_k=top_k,
         top_p=top_p,
         use_continuous_predictions=use_continuous,
+        verbose=verbose,
     )
 
     return structures
@@ -255,6 +259,7 @@ def main():
         help="Limit number of structures to load for testing (e.g. 1000)",
     )
     parser.add_argument("--gpu", action="store_true", help="Use GPU if available")
+    parser.add_argument("--verbose", action="store_true", help="Enable detailed debugging output during generation")
     args = parser.parse_args()
 
     # Set up data module
@@ -326,6 +331,7 @@ def main():
         top_k=40,  # Default value
         top_p=0.9,  # Default value
         use_continuous=args.continuous,
+        verbose=args.verbose,  # Use verbose flag for detailed debugging
     )
 
     # Validate structures

@@ -454,21 +454,47 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         has_continuous_lattice = False
         has_continuous_coords = False
         
-        if continuous_data and "lattice_params" in continuous_data:
-            lattice_data = continuous_data["lattice_params"]
-            if "lengths" in lattice_data and "angles" in lattice_data:
-                # Use the predicted continuous values
-                if isinstance(lattice_data["lengths"], torch.Tensor) and lattice_data["lengths"].numel() >= 3:
-                    # Extract a, b, c from lengths tensor
-                    a, b, c = lattice_data["lengths"][:3].tolist()
-                    lattice_params.extend([a, b, c])
-                    has_continuous_lattice = True
+        # Check explicit continuous prediction flags if available
+        if continuous_data:
+            has_continuous_lattice = continuous_data.get("has_continuous_lattice", False)
+            has_continuous_coords = continuous_data.get("has_continuous_coords", False)
+        
+        # Process continuous lattice parameters if available
+        if continuous_data and ("lattice_params" in continuous_data or 
+                              ("continuous_lattice_lengths" in continuous_data and "continuous_lattice_angles" in continuous_data)):
+            # Handle both formats for backward compatibility
+            if "lattice_params" in continuous_data:
+                lattice_data = continuous_data["lattice_params"]
+                if "lengths" in lattice_data and "angles" in lattice_data:
+                    # Use the predicted continuous values
+                    if isinstance(lattice_data["lengths"], torch.Tensor) and lattice_data["lengths"].numel() >= 3:
+                        # Extract a, b, c from lengths tensor
+                        a, b, c = lattice_data["lengths"][:3].tolist()
+                        lattice_params.extend([a, b, c])
+                        has_continuous_lattice = True
+                    
+                    if isinstance(lattice_data["angles"], torch.Tensor) and lattice_data["angles"].numel() >= 3:
+                        # Extract alpha, beta, gamma from angles tensor
+                        alpha, beta, gamma = lattice_data["angles"][:3].tolist()
+                        lattice_params.extend([alpha, beta, gamma])
+                        has_continuous_lattice = True
+            else:
+                # Direct continuous prediction tensors
+                if isinstance(continuous_data.get("continuous_lattice_lengths"), torch.Tensor):
+                    lengths = continuous_data["continuous_lattice_lengths"]
+                    if lengths.numel() >= 3:
+                        # Get the last prediction for this sequence
+                        a, b, c = lengths[-3:].tolist() if lengths.dim() == 1 else lengths[0, :3].tolist()
+                        lattice_params.extend([a, b, c])
+                        has_continuous_lattice = True
                 
-                if isinstance(lattice_data["angles"], torch.Tensor) and lattice_data["angles"].numel() >= 3:
-                    # Extract alpha, beta, gamma from angles tensor
-                    alpha, beta, gamma = lattice_data["angles"][:3].tolist()
-                    lattice_params.extend([alpha, beta, gamma])
-                    has_continuous_lattice = True
+                if isinstance(continuous_data.get("continuous_lattice_angles"), torch.Tensor):
+                    angles = continuous_data["continuous_lattice_angles"]
+                    if angles.numel() >= 3:
+                        # Get the last prediction for this sequence
+                        alpha, beta, gamma = angles[-3:].tolist() if angles.dim() == 1 else angles[0, :3].tolist()
+                        lattice_params.extend([alpha, beta, gamma])
+                        has_continuous_lattice = True
 
         # Track current atom being processed
         current_element = None
@@ -564,21 +590,59 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         # Use continuous fractional coordinates if available
         # This implementation simplifies the coordinate handling and would need to be
         # expanded in a real application to properly align atoms and coordinates
-        if continuous_data and "fractional_coords" in continuous_data:
-            coords_tensor = continuous_data["fractional_coords"]
+        if continuous_data and ("fractional_coords" in continuous_data or "continuous_fractional_coords" in continuous_data):
+            # Handle both formats for backward compatibility
+            if "fractional_coords" in continuous_data:
+                coords_tensor = continuous_data["fractional_coords"]
+            else:
+                coords_tensor = continuous_data["continuous_fractional_coords"]
+                
             if isinstance(coords_tensor, torch.Tensor) and coords_tensor.size(-1) == 3:
                 # We have proper coordinate predictions (num_atoms, 3)
                 has_continuous_coords = True
-                # Update atoms with continuous coordinates if we have both atoms and coordinates
-                if len(atoms) > 0 and coords_tensor.size(0) > 0:
+                
+                # Ensure we have some atoms defined even if none found from discrete tokens
+                if len(atoms) == 0 and has_continuous_lattice and "elements" in continuous_data:
+                    # Try to create atoms from predicted elements if available
+                    elements = continuous_data["elements"]
+                    if isinstance(elements, list) and len(elements) > 0:
+                        # Create basic atoms with predicted elements
+                        for i, elem in enumerate(elements):
+                            atoms.append({
+                                "element": elem,
+                                "wyckoff": "a",  # Default Wyckoff position
+                                "coords": []  # Will be filled below
+                            })
+                    else:
+                        # Create generic atoms if no elements predicted
+                        num_coords = coords_tensor.size(0) if coords_tensor.dim() == 2 else coords_tensor.size(0) // 3
+                        for i in range(num_coords):
+                            atoms.append({
+                                "element": "X",  # Generic element
+                                "wyckoff": "a",  # Default Wyckoff position
+                                "coords": []  # Will be filled below
+                            })
+                
+                # Update atoms with continuous coordinates
+                if len(atoms) > 0:
+                    # Prepare coordinates
+                    if coords_tensor.dim() == 1:
+                        coords_tensor = coords_tensor.view(-1, 3)  # Reshape to (num_atoms, 3)
+                        
                     # Limit to the number of atoms we have
                     num_atoms = min(len(atoms), coords_tensor.size(0))
                     for i in range(num_atoms):
                         # Convert tensor coordinates to list
                         atoms[i]["coords"] = coords_tensor[i].tolist()
                     
-                    # If we have more predicted coordinates than atoms, we could
-                    # potentially create new atoms, but that would require element type predictions
+                    # If we have more predicted coordinates than atoms, create generic atoms
+                    if coords_tensor.size(0) > len(atoms) and has_continuous_lattice:
+                        for i in range(len(atoms), coords_tensor.size(0)):
+                            atoms.append({
+                                "element": "X",  # Generic element
+                                "wyckoff": "a",  # Default Wyckoff position
+                                "coords": coords_tensor[i].tolist()
+                            })
         
         # Add the last atom if it exists and we're not using continuous coordinates
         if not has_continuous_coords and current_element is not None and len(current_coords) > 0:

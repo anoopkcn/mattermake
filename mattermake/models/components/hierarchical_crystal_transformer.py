@@ -447,7 +447,6 @@ class HierarchicalCrystalTransformer(nn.Module):
         )
 
         hidden_states = embeddings
-        selected_space_groups = {}
 
         if "composition" in self.active_modules:
             for layer in self.composition_encoder:

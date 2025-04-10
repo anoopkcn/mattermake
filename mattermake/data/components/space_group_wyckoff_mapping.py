@@ -1,101 +1,245 @@
-from typing import List, Optional, Union
+from typing import List, Optional
 import numpy as np
-import torch
-import spglib
-from ase import Atoms
+import os
+import csv
+import ast
+import re
+import logging
+
+logger = logging.getLogger(__name__)
+
+try:
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    logger.warning(
+        "PyTorch not available. Only numpy arrays will be supported for coordinate operations."
+    )
 
 
 class SpaceGroupWyckoffMapping:
-    """Maps space groups to their allowed Wyckoff positions and handles constraints using spglib."""
+    """Maps space groups to their allowed Wyckoff positions using data from CSV files."""
 
-    def __init__(self):
-        """Initialize the mapping between space groups and their Wyckoff positions using spglib."""
-        self._initialize_space_group_data()
+    def __init__(self, csv_dir=None):
+        """Initialize the mapping between space groups and their Wyckoff positions from CSV files.
 
-    def _initialize_space_group_data(self):
-        """Initialize space group data from spglib."""
+        Args:
+            csv_dir: Directory containing the CSV files. If None, looks in the same directory as this file.
+        """
+        if csv_dir is None:
+            # Default to the directory containing this file
+            csv_dir = os.path.dirname(os.path.abspath(__file__))
+            # Go up to data directory
+            csv_dir = os.path.abspath(os.path.join(csv_dir, ".."))
+            # Add data folder
+            csv_dir = os.path.join(csv_dir, "..")
+            # Find data directory in various locations
+            possible_data_dirs = [
+                os.path.join(csv_dir, "data"),  # mattermake/data
+                os.path.join(os.path.dirname(csv_dir), "data"),  # data/
+                os.path.join(
+                    csv_dir, "mattermake", "data"
+                ),  # mattermake/mattermake/data
+            ]
+
+            for directory in possible_data_dirs:
+                if os.path.exists(directory):
+                    csv_dir = directory
+                    break
+
+        self.wyckoff_list_path = os.path.join(csv_dir, "wyckoff_list.csv")
+        self.wyckoff_symbols_path = os.path.join(csv_dir, "wyckoff_symbols.csv")
+
+        logger.info(f"Looking for Wyckoff data in {csv_dir}")
+
+        # Initialize data structures
         self.sg_to_wyckoff = {}
         self.sg_wyckoff_to_multiplicity = {}
         self.sg_wyckoff_to_constraints = {}
         self.sg_to_operations = {}
 
-        # Iterate through all space groups
-        for sg_number in range(1, 231):
-            # Get dataset for this space group
-            try:
-                dataset = spglib.get_symmetry_dataset(
-                    self._create_dummy_cell(sg_number)
+        # Load data from CSV files
+        self._load_csv_data()
+
+    def _load_csv_data(self):
+        """Load data from CSV files and populate internal data structures."""
+        # Initialize with fallback data first in case CSV loading fails
+        self._initialize_fallback_data()
+
+        # Then try to load the more detailed data from CSV
+        try:
+            # Load Wyckoff symbols (with multiplicity)
+            self._load_wyckoff_symbols()
+
+            # Load Wyckoff positions (for constraints)
+            self._load_wyckoff_positions()
+
+            # Validate loaded data
+            self._validate_data()
+
+            logger.info(
+                f"Loaded Wyckoff data for {len(self.sg_to_wyckoff)} space groups"
+            )
+        except Exception as e:
+            logger.error(f"Error loading Wyckoff data from CSV: {e}")
+            logger.info("Using fallback data for all space groups")
+
+    def _load_wyckoff_symbols(self):
+        """Load Wyckoff symbols from CSV file."""
+        try:
+            if not os.path.exists(self.wyckoff_symbols_path):
+                logger.warning(
+                    f"Wyckoff symbols file not found: {self.wyckoff_symbols_path}"
                 )
+                return
 
-                # Get Wyckoff positions data
-                wyckoff_positions = spglib.get_wyckoff_positions(sg_number)
+            with open(self.wyckoff_symbols_path, "r") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    space_group = int(row["Space Group"])
+                    # Parse the symbols list using ast.literal_eval
+                    wyckoff_symbols = ast.literal_eval(row["Wyckoff Symbols"])
 
-                self.sg_to_wyckoff[sg_number] = []
-                self.sg_wyckoff_to_multiplicity[sg_number] = {}
-                self.sg_wyckoff_to_constraints[sg_number] = {}
+                    # Extract letters and multiplicities
+                    wyckoff_letters = []
+                    for symbol in wyckoff_symbols:
+                        # Extract letter (last character) and multiplicity (everything before)
+                        letter = symbol[-1]
+                        multiplicity = int(re.match(r"(\d+)", symbol).group(1))
 
-                # Get rotation matrices and translations for this space group
-                rot_matrices = dataset["rotations"]
-                translations = dataset["translations"]
-                self.sg_to_operations[sg_number] = (rot_matrices, translations)
+                        wyckoff_letters.append(letter)
+                        self.sg_wyckoff_to_multiplicity.setdefault(space_group, {})[
+                            letter
+                        ] = multiplicity
 
-                # Process Wyckoff positions
-                for letter, positions in zip(
-                    "abcdefghijklmnopqrstuvwxyz", wyckoff_positions
+                    self.sg_to_wyckoff[space_group] = wyckoff_letters
+
+        except Exception as e:
+            logger.error(f"Error loading Wyckoff symbols: {e}")
+            # Continue with fallback data
+
+    def _load_wyckoff_positions(self):
+        """Load Wyckoff positions from CSV file for constraints."""
+        try:
+            if not os.path.exists(self.wyckoff_list_path):
+                logger.warning(
+                    f"Wyckoff positions file not found: {self.wyckoff_list_path}"
+                )
+                return
+
+            with open(self.wyckoff_list_path, "r") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    space_group = int(row["Space Group"])
+                    # Parse the positions list using ast.literal_eval
+                    wyckoff_positions_list = ast.literal_eval(row["Wyckoff Positions"])
+
+                    # Set up constraints dictionary for this space group
+                    self.sg_wyckoff_to_constraints.setdefault(space_group, {})
+
+                    # Match positions with letters from sg_to_wyckoff
+                    if space_group in self.sg_to_wyckoff:
+                        wyckoff_letters = self.sg_to_wyckoff[space_group]
+
+                        for i, letter in enumerate(reversed(wyckoff_letters)):
+                            if i < len(wyckoff_positions_list):
+                                positions = wyckoff_positions_list[i]
+                                self.sg_wyckoff_to_constraints[space_group][letter] = (
+                                    self._extract_constraints(positions)
+                                )
+
+        except Exception as e:
+            logger.error(f"Error loading Wyckoff positions: {e}")
+            # Continue with fallback constraints
+
+    def _extract_constraints(self, positions):
+        """Extract coordinate constraints from Wyckoff position strings.
+
+        Args:
+            positions: List of position strings like ['x, y, z', '1/2, y, -z+1/2']
+
+        Returns:
+            List of constraints, where each constraint is a list of 3 elements (x,y,z)
+            where None means the coordinate is free, and a float means it's fixed
+        """
+        constraints = []
+
+        # Handle both string and list inputs
+        if isinstance(positions, str):
+            positions = [positions]
+
+        for position in positions:
+            coords = position.split(",")
+            if len(coords) != 3:
+                continue
+
+            constraint = []
+            for coord in coords:
+                coord = coord.strip()
+
+                # Check if this is a fixed coordinate (doesn't contain a variable)
+                if (
+                    "x" not in coord.lower()
+                    and "y" not in coord.lower()
+                    and "z" not in coord.lower()
                 ):
-                    if len(positions) == 0:
-                        continue
-
-                    # Store mapping
-                    self.sg_to_wyckoff[sg_number].append(letter)
-                    self.sg_wyckoff_to_multiplicity[sg_number][letter] = len(positions)
-
-                    # Determine coordinate constraints
-                    # This is a simplification - in reality we'd need to analyze the positions
-                    constraints = []
-                    if len(positions) == 1:
-                        # For multiplicity 1, we can directly extract fixed coordinates
-                        constraint = []
-                        for i, coord in enumerate(positions[0]):
-                            # Check if the coordinate is fixed (approximately equal to a simple fraction)
-                            for denom in [1, 2, 3, 4, 6]:
-                                for num in range(denom + 1):
-                                    if abs(coord - num / denom) < 1e-5:
-                                        constraint.append(num / denom)
-                                        break
-                                else:
-                                    continue
-                                break
-                            else:
-                                constraint.append(None)  # Free coordinate
-                        constraints.append(constraint)
+                    # Parse fractions like 1/2
+                    if "/" in coord:
+                        parts = coord.split("/")
+                        if len(parts) == 2:
+                            try:
+                                num = float(parts[0])
+                                denom = float(parts[1])
+                                value = num / denom
+                            except ValueError:
+                                value = 0.0
+                        else:
+                            value = 0.0
                     else:
-                        # For higher multiplicities, we need more complex analysis
-                        # For simplicity in this implementation, we'll just mark all as free
-                        constraints.append([None, None, None])
+                        try:
+                            value = float(coord) if coord.strip() else 0.0
+                        except ValueError:
+                            value = 0.0
+                    constraint.append(value)
+                else:
+                    # Variable coordinate (not fixed)
+                    constraint.append(None)
 
-                    self.sg_wyckoff_to_constraints[sg_number][letter] = constraints
+            constraints.append(constraint)
 
-            except Exception as e:
-                print(f"Warning: Failed to process space group {sg_number}: {e}")
-                # Add placeholder data
-                self.sg_to_wyckoff[sg_number] = ["a"]
-                self.sg_wyckoff_to_multiplicity[sg_number] = {"a": 1}
-                self.sg_wyckoff_to_constraints[sg_number] = {"a": [[None, None, None]]}
+        return constraints
 
-    def _create_dummy_cell(self, sg_number):
-        """Create a dummy cell for the given space group number."""
-        # Create a simple cubic cell with a single atom
-        # This is just to get the space group operations
-        a = 1.0
-        cell = np.array([[a, 0, 0], [0, a, 0], [0, 0, a]])
-        positions = np.array([[0, 0, 0]])
-        atoms = Atoms("H", positions=positions, cell=cell, pbc=True)
+    def _validate_data(self):
+        """Validate that we have data for all 230 space groups."""
+        missing_sgs = []
+        for sg in range(1, 231):
+            if sg not in self.sg_to_wyckoff:
+                missing_sgs.append(sg)
 
-        # Set the space group number
-        atoms.info["spacegroup"] = sg_number
+        if missing_sgs:
+            logger.warning(
+                f"Missing data for {len(missing_sgs)} space groups: {missing_sgs}"
+            )
+            # Add default data for missing space groups
+            for sg in missing_sgs:
+                self.sg_to_wyckoff[sg] = ["a"]
+                self.sg_wyckoff_to_multiplicity.setdefault(sg, {})["a"] = 1
+                self.sg_wyckoff_to_constraints.setdefault(sg, {})["a"] = [
+                    [None, None, None]
+                ]
 
-        return (cell, positions, np.array([1]))  # Cell, positions, types
+    def _initialize_fallback_data(self):
+        """Initialize fallback data when CSV files are not available."""
+        logger.info("Initializing fallback Wyckoff data (minimal)")
+
+        # Initialize with minimal data for space groups 1-230
+        for sg in range(1, 231):
+            # Always provide at least Wyckoff position 'a'
+            self.sg_to_wyckoff[sg] = ["a"]
+            self.sg_wyckoff_to_multiplicity.setdefault(sg, {})["a"] = 1
+            self.sg_wyckoff_to_constraints.setdefault(sg, {})["a"] = [
+                [None, None, None]
+            ]
 
     def get_allowed_wyckoff_positions(self, space_group: int) -> List[str]:
         """Get allowed Wyckoff positions for a given space group.
@@ -106,7 +250,7 @@ class SpaceGroupWyckoffMapping:
         Returns:
             List of allowed Wyckoff position letters
         """
-        return self.sg_to_wyckoff.get(space_group, [])
+        return self.sg_to_wyckoff.get(space_group, ["a"])
 
     def get_wyckoff_multiplicity(self, space_group: int, wyckoff_letter: str) -> int:
         """Get the multiplicity of a specific Wyckoff position in a space group.
@@ -119,7 +263,7 @@ class SpaceGroupWyckoffMapping:
             Multiplicity of the Wyckoff position
         """
         return self.sg_wyckoff_to_multiplicity.get(space_group, {}).get(
-            wyckoff_letter, 0
+            wyckoff_letter, 1
         )
 
     def get_coordinate_constraints(
@@ -135,6 +279,7 @@ class SpaceGroupWyckoffMapping:
             List of coordinate constraints. Each constraint is a list of 3 elements (x,y,z),
             where None means the coordinate is free, and a float means it's fixed to that value.
         """
+        # Return empty constraints if not found - means no specific constraints
         return self.sg_wyckoff_to_constraints.get(space_group, {}).get(
             wyckoff_letter, []
         )
@@ -164,10 +309,10 @@ class SpaceGroupWyckoffMapping:
 
     def apply_coordinate_constraints(
         self,
-        coords: Union[np.ndarray, torch.Tensor],
+        coords,  # Can be numpy array or torch tensor
         space_group: int,
         wyckoff_letter: str,
-    ) -> Union[np.ndarray, torch.Tensor]:
+    ):
         """Apply coordinate constraints for a given Wyckoff position.
 
         Args:
@@ -185,8 +330,15 @@ class SpaceGroupWyckoffMapping:
         # Get the first constraint (for simplicity)
         constraint = constraints[0]
 
+        # Check if input is torch tensor or numpy array
+        is_torch = False
+        if TORCH_AVAILABLE:
+            import torch
+
+            is_torch = isinstance(coords, torch.Tensor)
+
         # Apply constraints based on whether input is numpy or torch
-        if isinstance(coords, np.ndarray):
+        if not is_torch:
             constrained_coords = coords.copy()
             for i, fixed_value in enumerate(constraint):
                 if fixed_value is not None and i < coords.shape[1]:
@@ -201,11 +353,11 @@ class SpaceGroupWyckoffMapping:
 
     def generate_symmetry_equivalent_positions(
         self,
-        coords: Union[np.ndarray, torch.Tensor],
+        coords,  # Can be numpy array or torch tensor
         space_group: int,
         wyckoff_letter: str,
-    ) -> Union[np.ndarray, torch.Tensor]:
-        """Generate symmetry-equivalent positions for coordinates.
+    ):
+        """Generate symmetry-equivalent positions for coordinates based on multiplicity.
 
         Args:
             coords: Original coordinates [batch_size, 3]
@@ -213,47 +365,77 @@ class SpaceGroupWyckoffMapping:
             wyckoff_letter: Wyckoff position letter
 
         Returns:
-            Full set of symmetry-equivalent positions
+            Full set of symmetry-equivalent positions (approximate method)
         """
-        # Get the symmetry operations for this space group
-        if space_group not in self.sg_to_operations:
-            return coords
-
-        rotations, translations = self.sg_to_operations[space_group]
+        # Get the multiplicity for this Wyckoff position
         multiplicity = self.get_wyckoff_multiplicity(space_group, wyckoff_letter)
 
         if multiplicity <= 1:
             return coords
 
-        # Convert PyTorch tensor to numpy if needed
-        is_torch = isinstance(coords, torch.Tensor)
-        if is_torch:
-            device = coords.device
-            dtype = coords.dtype
-            coords_np = coords.cpu().numpy()
-        else:
-            coords_np = coords
+        # Check if input is torch tensor or numpy array
+        is_torch = False
+        device = None
+        dtype = None
+        if TORCH_AVAILABLE:
+            import torch
 
-        # Apply symmetry operations to generate equivalent positions
-        equiv_positions = []
+            is_torch = isinstance(coords, torch.Tensor)
+            if is_torch:
+                device = coords.device
+                dtype = coords.dtype
 
-        for i in range(min(multiplicity, len(rotations))):
-            rot = rotations[i]
-            trans = translations[i]
+        # Convert to numpy for processing if it's a torch tensor
+        coords_np = coords.cpu().numpy() if is_torch else coords.copy()
 
-            # Apply the symmetry operation
-            new_pos = np.dot(coords_np, rot.T) + trans
+        # Get constraints to understand which coordinates are fixed
+        constraints = self.get_coordinate_constraints(space_group, wyckoff_letter)
+        fixed_coords = [False, False, False]  # Whether x, y, z are fixed
 
-            # Ensure coordinates are in the unit cell [0, 1)
-            new_pos = new_pos % 1.0
+        if constraints and len(constraints) > 0:
+            for i, value in enumerate(constraints[0]):
+                if i < 3:
+                    fixed_coords[i] = value is not None
+
+        # Generate equivalent positions based on the multiplicity and fixed coordinates
+        equiv_positions = [coords_np]
+
+        # This is a simplified approach that doesn't use actual symmetry operations
+        # For a more accurate implementation, you would need the actual symmetry operations
+        for i in range(1, multiplicity):
+            # Generate a position by applying simple transformations
+            # This is just an approximation and should be replaced with actual symmetry operations
+            new_pos = coords_np.copy()
+
+            # Apply transformations based on which coordinates are fixed
+            for axis in range(3):
+                if not fixed_coords[axis]:
+                    # For free coordinates, we can generate equivalents
+                    # This is a simplified approach - in reality, the symmetry operations are more complex
+                    if i % 2 == 1:
+                        # Simple reflection for demonstration
+                        new_pos[:, axis] = 1.0 - new_pos[:, axis]
+
+                    if i % 4 >= 2:
+                        # Another transformation
+                        new_pos[:, axis] = 0.5 + new_pos[:, axis] % 0.5
 
             equiv_positions.append(new_pos)
+
+            # Ensure we don't exceed the multiplicity
+            if len(equiv_positions) >= multiplicity:
+                break
 
         # Combine all positions
         all_positions = np.vstack(equiv_positions)
 
+        # Ensure coordinates are in range [0, 1)
+        all_positions = all_positions % 1.0
+
         # Convert back to PyTorch tensor if input was a tensor
-        if is_torch:
+        if is_torch and TORCH_AVAILABLE:
+            import torch
+
             return torch.tensor(all_positions, device=device, dtype=dtype)
         else:
             return all_positions

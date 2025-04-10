@@ -282,10 +282,17 @@ class HierarchicalCrystalTransformer(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        
+        self._sg_wyckoff_mapping = None
+
         # Initialize SpaceGroupWyckoffMapping for Wyckoff constraints
-        if hasattr(config, 'apply_wyckoff_constraints') and config.apply_wyckoff_constraints:
-            from mattermake.data.components.space_group_wyckoff_mapping import SpaceGroupWyckoffMapping
+        if (
+            hasattr(config, "apply_wyckoff_constraints")
+            and config.apply_wyckoff_constraints
+        ):
+            from mattermake.data.components.space_group_wyckoff_mapping import (
+                SpaceGroupWyckoffMapping,
+            )
+
             self.sg_wyckoff_mapping = SpaceGroupWyckoffMapping()
 
         self.token_embeddings = nn.Embedding(
@@ -373,6 +380,24 @@ class HierarchicalCrystalTransformer(nn.Module):
         self.active_modules = ["composition", "space_group", "lattice", "atoms"]
 
         self.apply(self._init_weights)
+
+        @property
+        def sg_wyckoff_mapping(self):
+            """Lazy loading for SpaceGroupWyckoffMapping"""
+            if (
+                not hasattr(self.config, "apply_wyckoff_constraints")
+                or not self.config.apply_wyckoff_constraints
+            ):
+                return None
+
+            if self._sg_wyckoff_mapping is None:
+                from mattermake.data.components.space_group_wyckoff_mapping import (
+                    SpaceGroupWyckoffMapping,
+                )
+
+                # This will only run the first time the mapping is accessed
+                self._sg_wyckoff_mapping = SpaceGroupWyckoffMapping()
+            return self._sg_wyckoff_mapping
 
     def _init_weights(self, module):
         """Initialize the weights"""
@@ -807,13 +832,13 @@ class HierarchicalCrystalTransformer(nn.Module):
                                 hasattr(self.config, "apply_wyckoff_constraints")
                                 and self.config.apply_wyckoff_constraints
                                 and batch_idx in selected_space_groups
-                                and hasattr(self, "sg_wyckoff_mapping")
+                                and self._sg_wyckoff_mapping is not None
                             ):
                                 space_group = selected_space_groups[batch_idx]
 
                                 # Create a mask for valid Wyckoff positions
                                 valid_mask = torch.tensor(
-                                    self.sg_wyckoff_mapping.create_wyckoff_mask(
+                                    self._sg_wyckoff_mapping.create_wyckoff_mask(
                                         space_group
                                     ),
                                     device=wyckoff_hidden.device,

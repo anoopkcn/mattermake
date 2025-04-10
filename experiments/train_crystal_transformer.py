@@ -81,7 +81,7 @@ def train(config: DictConfig) -> Optional[float]:
             
             # Handle the case where pl_module might be a dict (happens in some distributed training scenarios)
             if isinstance(pl_module, dict):
-                log.warning("pl_module is a dictionary instead of a LightningModule object")
+                # This is normal in distributed training, so no need to log a warning
                 return
                 
             # Make sure pl_module has a model attribute

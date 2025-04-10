@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --account=westai0036
-#SBATCH --nodes=2
+#SBATCH --nodes=4
 #SBATCH --ntasks-per-node=4
 #SBATCH --time=24:00:00
 #SBATCH --partition=dc-hwai
@@ -21,7 +21,7 @@ srun --gres=gpu:4 --nodes=${SLURM_JOB_NUM_NODES} --ntasks-per-node=4 --cpu-bind=
     cd /p/home/jusers/chandran1/jureca/hai_solaihack/mattermake/experiments
 
     python train_crystal_transformer.py \
-        trainer.max_epochs=150 \
+        trainer.max_epochs=50 \
         trainer.num_nodes=$SLURM_JOB_NUM_NODES \
         trainer.devices=4 \
         data.batch_size=32 \

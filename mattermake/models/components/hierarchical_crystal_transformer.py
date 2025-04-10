@@ -5,6 +5,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from mattermake.models.components.constraint_handler import CrystalConstraintHandler
+
 
 @dataclass
 class HierarchicalCrystalTransformerConfig:
@@ -280,6 +282,11 @@ class HierarchicalCrystalTransformer(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
+        
+        # Initialize SpaceGroupWyckoffMapping for Wyckoff constraints
+        if hasattr(config, 'apply_wyckoff_constraints') and config.apply_wyckoff_constraints:
+            from mattermake.data.components.space_group_wyckoff_mapping import SpaceGroupWyckoffMapping
+            self.sg_wyckoff_mapping = SpaceGroupWyckoffMapping()
 
         self.token_embeddings = nn.Embedding(
             config.vocab_size,
@@ -613,6 +620,7 @@ class HierarchicalCrystalTransformer(nn.Module):
                     0.0, device=hidden_states.device, requires_grad=True
                 )
 
+            selected_space_groups = {}
             if "space_group" in self.active_modules:
                 sg_mask = safe_segment_ids == self.config.SEGMENT_SPACE_GROUP
                 if torch.any(sg_mask):
@@ -620,6 +628,19 @@ class HierarchicalCrystalTransformer(nn.Module):
                     if sg_hidden.size(0) > 0:
                         sg_logits = self.space_group_head(sg_hidden)
                         outputs["space_group_logits"] = sg_logits
+
+                        if not self.training:
+                            # For inference, get the most likely space group
+                            batch_indices = torch.where(sg_mask)[0]
+                            for i, batch_idx in enumerate(batch_indices):
+                                if batch_idx not in selected_space_groups:
+                                    # +1 because space groups are 1-230, and our output is 0-229
+                                    space_group = sg_logits[i].argmax().item() + 1
+                                    # Ensure space group is in valid range
+                                    if 1 <= space_group <= 230:
+                                        selected_space_groups[batch_idx.item()] = (
+                                            space_group
+                                        )
 
                         if labels is not None:
                             sg_labels_mask = (
@@ -767,8 +788,47 @@ class HierarchicalCrystalTransformer(nn.Module):
                 if torch.any(wyckoff_mask):
                     wyckoff_hidden = hidden_states[wyckoff_mask]
                     if wyckoff_hidden.size(0) > 0:
-                        wyckoff_logits = self.wyckoff_head(wyckoff_hidden)
-                        outputs["wyckoff_logits"] = wyckoff_logits
+                        # Get batch indices for each Wyckoff position
+                        batch_indices = torch.where(wyckoff_mask)[0]
+
+                        # Prepare outputs for wyckoff logits
+                        all_wyckoff_logits = []
+
+                        for i, batch_idx in enumerate(batch_indices):
+                            batch_idx = batch_idx.item()
+
+                            # Original fixed Wyckoff head
+                            wyckoff_logits_i = self.wyckoff_head(
+                                wyckoff_hidden[i : i + 1]
+                            )
+
+                            # Apply space group constraints if applicable
+                            if (
+                                hasattr(self.config, "apply_wyckoff_constraints")
+                                and self.config.apply_wyckoff_constraints
+                                and batch_idx in selected_space_groups
+                                and hasattr(self, "sg_wyckoff_mapping")
+                            ):
+                                space_group = selected_space_groups[batch_idx]
+
+                                # Create a mask for valid Wyckoff positions
+                                valid_mask = torch.tensor(
+                                    self.sg_wyckoff_mapping.create_wyckoff_mask(
+                                        space_group
+                                    ),
+                                    device=wyckoff_hidden.device,
+                                    dtype=torch.bool,
+                                )
+
+                                # Apply the mask by setting invalid positions to -inf
+                                if valid_mask.shape[0] <= wyckoff_logits_i.shape[1]:
+                                    wyckoff_logits_i[:, ~valid_mask] = float("-inf")
+
+                            all_wyckoff_logits.append(wyckoff_logits_i)
+
+                        if all_wyckoff_logits:
+                            wyckoff_logits = torch.cat(all_wyckoff_logits, dim=0)
+                            outputs["wyckoff_logits"] = wyckoff_logits
 
                         if labels is not None:
                             wyckoff_labels = labels[wyckoff_mask]
@@ -970,20 +1030,7 @@ class HierarchicalCrystalTransformer(nn.Module):
         verbose: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
-        Generate sequences using autoregressive generation.
-
-        Args:
-            input_ids: Input token ids
-            segment_ids: Segment ids for the input tokens
-            constraints: Dictionary of constraints for generation
-            max_length: Maximum sequence length to generate
-            temperature: Sampling temperature
-            top_k: If specified, only sample from the top k most likely tokens
-            top_p: If specified, sample from tokens with cumulative probability >= top_p
-            repetition_penalty: Penalty for repeating tokens
-            eos_token_id: Token signifying end of sequence
-            pad_token_id: Token used for padding
-            verbose: Whether to print verbose output during generation
+        Generate sequences using autoregressive generation with space group and Wyckoff constraints.
         """
         self.eval()
         batch_size = input_ids.shape[0]
@@ -1018,11 +1065,9 @@ class HierarchicalCrystalTransformer(nn.Module):
 
         unfinished_sequences = torch.ones(batch_size, dtype=torch.bool, device=device)
 
-        # Initialize constraint handler (if provided)
-        # constraint_handler = (
-        #     CrystalConstraintHandler(constraints) if constraints else None
-        # )
-        constraint_handler = None
+        # Initialize constraint handler
+        constraint_handler = CrystalConstraintHandler(constraints)
+
         while True:
             # Make sure all modules are active during generation in continuous mode
             if self.config.prediction_mode == "continuous" and hasattr(
@@ -1096,17 +1141,25 @@ class HierarchicalCrystalTransformer(nn.Module):
                         if previous_token != pad_token_id:
                             next_token_logits[i, previous_token] /= repetition_penalty
 
-            if constraint_handler is not None:
-                current_pos = generated_ids.shape[1] - 1
-                token_type = generated_segments[:, -1].cpu().numpy()
+            # Apply constraints based on current segment type
+            current_segments = generated_segments[:, -1].cpu().numpy()
 
-                for i in range(batch_size):
-                    if unfinished_sequences[i]:
-                        mask = constraint_handler.get_mask(
-                            generated_ids[i], token_type[i], current_pos
-                        )
-                        if mask is not None:
-                            next_token_logits[i, ~mask] = float("-inf")
+            for i in range(batch_size):
+                if unfinished_sequences[i]:
+                    current_segment = current_segments[i]
+
+                    # Apply Wyckoff position constraints
+                    if (
+                        current_segment == self.config.SEGMENT_WYCKOFF
+                        and hasattr(self.config, "apply_wyckoff_constraints")
+                        and self.config.apply_wyckoff_constraints
+                    ):
+                        wyckoff_mask = constraint_handler.get_wyckoff_mask(i)
+                        if (
+                            wyckoff_mask is not None
+                            and wyckoff_mask.shape[0] <= next_token_logits.shape[1]
+                        ):
+                            next_token_logits[i, ~wyckoff_mask] = float("-inf")
 
             if top_k is not None:
                 indices_to_remove = (
@@ -1155,6 +1208,20 @@ class HierarchicalCrystalTransformer(nn.Module):
             next_tokens = next_tokens * unfinished_sequences + pad_token_id * (
                 ~unfinished_sequences
             )
+
+            # Update constraint handler with generated tokens
+            for i in range(batch_size):
+                if unfinished_sequences[i]:
+                    token_id = next_tokens[i].item()
+                    current_segment = current_segments[i]
+
+                    # Track space group tokens
+                    if current_segment == self.config.SEGMENT_SPACE_GROUP:
+                        constraint_handler.update_space_group(i, token_id)
+
+                    # Track Wyckoff position tokens
+                    elif current_segment == self.config.SEGMENT_WYCKOFF:
+                        constraint_handler.update_wyckoff_position(i, token_id)
 
             if verbose and (
                 generated_ids.shape[1] % 10 == 0 or generated_ids.shape[1] < 10

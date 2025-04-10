@@ -11,7 +11,9 @@ from mattermake.models.hierarchical_crystal_transformer_module import (
 from mattermake.utils.pylogger import get_pylogger
 
 # Suppress pymatgen warnings about fractional coordinates
-warnings.filterwarnings("ignore", message=".*fractional coordinates rounded to ideal values.*")
+warnings.filterwarnings(
+    "ignore", message=".*fractional coordinates rounded to ideal values.*"
+)
 
 # Uncomment if needed
 # from torch.utils.data import DataLoader
@@ -231,3 +233,11 @@ if __name__ == "__main__":
     #     --num_structures 5 \
     #     --temperature 0.8 \
     #     --gpu
+
+# python -m mattermake.scripts.test_crystal_transformer_fixed \
+#     --data_dir data/structure_tokens \
+#     --checkpoint path/to/checkpoint \
+#     --num_structures 5 \
+#     --temperature 0.8 \
+#     --apply_wyckoff_constraints \
+#     --gpu

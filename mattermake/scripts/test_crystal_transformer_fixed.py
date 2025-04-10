@@ -28,13 +28,14 @@ logger = get_pylogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-def load_model_from_checkpoint(checkpoint_path, vocab_size=None, use_continuous=False):
+def load_model_from_checkpoint(checkpoint_path, vocab_size=None, use_continuous=False, apply_wyckoff_constraints=False):
     """Load a model from checkpoint
 
     Args:
         checkpoint_path: Path to the checkpoint file
         vocab_size: Vocabulary size for the model
         use_continuous: Whether to use continuous predictions for coordinates and lattice
+        apply_wyckoff_constraints: Whether to apply Wyckoff position constraints conditioned on space group
     """
     if checkpoint_path is not None and os.path.exists(checkpoint_path):
         logger.info(f"Loading model from checkpoint: {checkpoint_path}")
@@ -58,6 +59,11 @@ def load_model_from_checkpoint(checkpoint_path, vocab_size=None, use_continuous=
             coordinate_embedding_dim=4,  # Reduced from default (32) to avoid overflow
             prediction_mode="continuous" if use_continuous else "discrete",  # Set prediction mode based on parameter
         )
+        
+        # Set Wyckoff constraints configuration after model initialization
+        if hasattr(model, 'model') and hasattr(model.model, 'config'):
+            logger.info(f"Setting apply_wyckoff_constraints to {apply_wyckoff_constraints}")
+            model.model.config.apply_wyckoff_constraints = apply_wyckoff_constraints
         return model
 
 
@@ -107,6 +113,11 @@ def generate_structures(
         current_mode = model.model.config.prediction_mode
         logger.info(f"Model prediction mode: {current_mode}")
         logger.info(f"Active modules: {model.model.active_modules}")
+        
+        # Log Wyckoff constraints status
+        if hasattr(model.model.config, 'apply_wyckoff_constraints'):
+            wyckoff_enabled = model.model.config.apply_wyckoff_constraints
+            logger.info(f"Wyckoff position constraints: {'Enabled' if wyckoff_enabled else 'Disabled'}")
     else:
         logger.warning("Could not access model config")
         current_mode = "unknown"
@@ -161,6 +172,10 @@ def validate_structures(structures):
     # Track how many structures used continuous predictions
     continuous_lattice_count = 0
     continuous_coords_count = 0
+    
+    # Track Wyckoff position statistics
+    structures_with_wyckoff = 0
+    wyckoff_positions_count = 0
 
     for i, structure in enumerate(structures):
         logger.info(f"\n--- Structure {i + 1} ---")
@@ -231,6 +246,16 @@ def validate_structures(structures):
         else:
             issues.append(f"Structure {i + 1}: No atoms specified")
 
+        # Count Wyckoff positions usage
+        has_wyckoff = any("wyckoff" in atom and atom["wyckoff"] not in [None, "Unknown", ""] for atom in structure.get("atoms", []))
+        if has_wyckoff:
+            structures_with_wyckoff += 1
+            wyckoff_count = sum(1 for atom in structure.get("atoms", []) if "wyckoff" in atom and atom["wyckoff"] not in [None, "Unknown", ""])
+            wyckoff_positions_count += wyckoff_count
+            logger.info(f"Wyckoff positions: {wyckoff_count}/{len(structure.get('atoms', []))} atoms")
+        else:
+            logger.info("Wyckoff positions: None")
+            
         # Check if structure can be converted to pymatgen Structure
         if "pmg_structure" in structure:
             logger.info("Successfully converted to pymatgen Structure")
@@ -258,6 +283,8 @@ def validate_structures(structures):
         "valid_count": valid_count,
         "continuous_lattice_count": continuous_lattice_count,
         "continuous_coords_count": continuous_coords_count,
+        "structures_with_wyckoff": structures_with_wyckoff,
+        "wyckoff_positions_count": wyckoff_positions_count,
     }
 
 
@@ -299,6 +326,11 @@ def main():
         action="store_true",
         help="Enable detailed debugging output during generation",
     )
+    parser.add_argument(
+        "--apply_wyckoff_constraints",
+        action="store_true",
+        help="Apply Wyckoff position constraints conditioned on space group",
+    )
     args = parser.parse_args()
 
     # Set up data module
@@ -338,14 +370,19 @@ def main():
 
     # Load or initialize model
     model = load_model_from_checkpoint(
-        args.checkpoint, vocab_size=vocab_size, use_continuous=args.continuous
+        args.checkpoint, vocab_size=vocab_size, use_continuous=args.continuous,
+        apply_wyckoff_constraints=args.apply_wyckoff_constraints
     )
     
-    # Force prediction mode to match the argument
-    # This is needed because loaded checkpoint might have been trained with a different mode
+    # Force configuration to match the arguments
+    # This is needed because loaded checkpoint might have been trained with different settings
     if hasattr(model.model, 'config'):
         logger.info(f"Setting model prediction mode to: {'continuous' if args.continuous else 'discrete'}")
         model.model.config.prediction_mode = 'continuous' if args.continuous else 'discrete'
+        
+        # Set Wyckoff constraints configuration
+        logger.info(f"Setting Wyckoff position constraints: {'Enabled' if args.apply_wyckoff_constraints else 'Disabled'}")
+        model.model.config.apply_wyckoff_constraints = args.apply_wyckoff_constraints
 
     # Set tokenizer config in the model for proper decoding
     if tokenizer:
@@ -388,6 +425,12 @@ def main():
     )
     logger.info(
         f"With continuous coordinates: {validation_results['continuous_coords_count']}"
+    )
+    logger.info(
+        f"Structures with Wyckoff positions: {validation_results['structures_with_wyckoff']}/{args.num_structures}"
+    )
+    logger.info(
+        f"Total Wyckoff positions assigned: {validation_results['wyckoff_positions_count']}"
     )
 
 

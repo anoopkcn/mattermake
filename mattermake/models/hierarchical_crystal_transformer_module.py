@@ -107,15 +107,45 @@ class HierarchicalCrystalTransformerModule(LightningModule):
 
         # Log component-specific losses if available
         if "space_group_loss" in outputs:
-            self.log("train_sg_loss", outputs["space_group_loss"], on_epoch=True, sync_dist=True, batch_size=batch_size)
+            self.log(
+                "train_sg_loss",
+                outputs["space_group_loss"],
+                on_epoch=True,
+                sync_dist=True,
+                batch_size=batch_size,
+            )
         if "lattice_loss" in outputs:
-            self.log("train_lattice_loss", outputs["lattice_loss"], on_epoch=True, sync_dist=True, batch_size=batch_size)
+            self.log(
+                "train_lattice_loss",
+                outputs["lattice_loss"],
+                on_epoch=True,
+                sync_dist=True,
+                batch_size=batch_size,
+            )
         if "element_loss" in outputs:
-            self.log("train_element_loss", outputs["element_loss"], on_epoch=True, sync_dist=True, batch_size=batch_size)
+            self.log(
+                "train_element_loss",
+                outputs["element_loss"],
+                on_epoch=True,
+                sync_dist=True,
+                batch_size=batch_size,
+            )
         if "wyckoff_loss" in outputs:
-            self.log("train_wyckoff_loss", outputs["wyckoff_loss"], on_epoch=True, sync_dist=True, batch_size=batch_size)
+            self.log(
+                "train_wyckoff_loss",
+                outputs["wyckoff_loss"],
+                on_epoch=True,
+                sync_dist=True,
+                batch_size=batch_size,
+            )
         if "coordinate_loss" in outputs:
-            self.log("train_coordinate_loss", outputs["coordinate_loss"], on_epoch=True, sync_dist=True, batch_size=batch_size)
+            self.log(
+                "train_coordinate_loss",
+                outputs["coordinate_loss"],
+                on_epoch=True,
+                sync_dist=True,
+                batch_size=batch_size,
+            )
 
         return loss
 
@@ -127,19 +157,61 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         # Get batch size for logging
         batch_size = len(batch["input_ids"])
 
-        self.log("val_loss", loss, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=batch_size)
-        
+        self.log(
+            "val_loss",
+            loss,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
+            batch_size=batch_size,
+        )
+
         # Log component-specific validation losses if available
         if "space_group_loss" in outputs:
-            self.log("val_sg_loss", outputs["space_group_loss"], on_epoch=True, sync_dist=True, batch_size=batch_size)
+            self.log(
+                "val_sg_loss",
+                outputs["space_group_loss"],
+                on_epoch=True,
+                sync_dist=True,
+                prog_bar=True,
+                batch_size=batch_size,
+            )
         if "lattice_loss" in outputs:
-            self.log("val_lattice_loss", outputs["lattice_loss"], on_epoch=True, sync_dist=True, batch_size=batch_size)
+            self.log(
+                "val_lattice_loss",
+                outputs["lattice_loss"],
+                on_epoch=True,
+                sync_dist=True,
+                prog_bar=True,
+                batch_size=batch_size,
+            )
         if "element_loss" in outputs:
-            self.log("val_element_loss", outputs["element_loss"], on_epoch=True, sync_dist=True, batch_size=batch_size)
+            self.log(
+                "val_element_loss",
+                outputs["element_loss"],
+                on_epoch=True,
+                sync_dist=True,
+                prog_bar=True,
+                batch_size=batch_size,
+            )
         if "wyckoff_loss" in outputs:
-            self.log("val_wyckoff_loss", outputs["wyckoff_loss"], on_epoch=True, sync_dist=True, batch_size=batch_size)
+            self.log(
+                "val_wyckoff_loss",
+                outputs["wyckoff_loss"],
+                on_epoch=True,
+                sync_dist=True,
+                prog_bar=True,
+                batch_size=batch_size,
+            )
         if "coordinate_loss" in outputs:
-            self.log("val_coordinate_loss", outputs["coordinate_loss"], on_epoch=True, sync_dist=True, batch_size=batch_size)
+            self.log(
+                "val_coordinate_loss",
+                outputs["coordinate_loss"],
+                on_epoch=True,
+                sync_dist=True,
+                prog_bar=True,
+                batch_size=batch_size,
+            )
 
         # Calculate token-level accuracy
         logits = outputs["logits"]
@@ -163,7 +235,14 @@ class HierarchicalCrystalTransformerModule(LightningModule):
 
         # Calculate accuracy
         accuracy = correct.sum().float() / (valid_mask.sum().float() + 1e-8)
-        self.log("val_accuracy", accuracy, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=batch_size)
+        self.log(
+            "val_accuracy",
+            accuracy,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
+            batch_size=batch_size,
+        )
 
         # Calculate accuracy by segment type
         segment_ids = batch["segment_ids"]
@@ -176,14 +255,26 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         if comp_mask.sum() > 0:
             comp_correct = ((preds == shift_labels) & comp_mask).sum().float()
             comp_accuracy = comp_correct / (comp_mask.sum().float() + 1e-8)
-            self.log("val_comp_accuracy", comp_accuracy, on_epoch=True, sync_dist=True, batch_size=batch_size)
+            self.log(
+                "val_comp_accuracy",
+                comp_accuracy,
+                on_epoch=True,
+                sync_dist=True,
+                batch_size=batch_size,
+            )
 
         # Space group accuracy
         sg_mask = (shift_segments == self.model.config.SEGMENT_SPACE_GROUP) & valid_mask
         if sg_mask.sum() > 0:
             sg_correct = ((preds == shift_labels) & sg_mask).sum().float()
             sg_accuracy = sg_correct / (sg_mask.sum().float() + 1e-8)
-            self.log("val_sg_accuracy", sg_accuracy, on_epoch=True, sync_dist=True, batch_size=batch_size)
+            self.log(
+                "val_sg_accuracy",
+                sg_accuracy,
+                on_epoch=True,
+                sync_dist=True,
+                batch_size=batch_size,
+            )
 
         # Lattice accuracy
         lattice_mask = (
@@ -192,7 +283,13 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         if lattice_mask.sum() > 0:
             lattice_correct = ((preds == shift_labels) & lattice_mask).sum().float()
             lattice_accuracy = lattice_correct / (lattice_mask.sum().float() + 1e-8)
-            self.log("val_lattice_accuracy", lattice_accuracy, on_epoch=True, sync_dist=True, batch_size=batch_size)
+            self.log(
+                "val_lattice_accuracy",
+                lattice_accuracy,
+                on_epoch=True,
+                sync_dist=True,
+                batch_size=batch_size,
+            )
 
         # Atom accuracy (element, wyckoff, coordinate)
         atom_mask = (
@@ -203,26 +300,60 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         if atom_mask.sum() > 0:
             atom_correct = ((preds == shift_labels) & atom_mask).sum().float()
             atom_accuracy = atom_correct / (atom_mask.sum().float() + 1e-8)
-            self.log("val_atom_accuracy", atom_accuracy, on_epoch=True, sync_dist=True, batch_size=batch_size)
-            
+            self.log(
+                "val_atom_accuracy",
+                atom_accuracy,
+                on_epoch=True,
+                sync_dist=True,
+                batch_size=batch_size,
+            )
+
         # Break down atom accuracy into element, Wyckoff, and coordinate accuracies
-        element_mask = (shift_segments == self.model.config.SEGMENT_ELEMENT) & valid_mask
+        element_mask = (
+            shift_segments == self.model.config.SEGMENT_ELEMENT
+        ) & valid_mask
         if element_mask.sum() > 0:
             element_correct = ((preds == shift_labels) & element_mask).sum().float()
             element_accuracy = element_correct / (element_mask.sum().float() + 1e-8)
-            self.log("val_element_accuracy", element_accuracy, on_epoch=True, sync_dist=True, batch_size=batch_size)
-            
-        wyckoff_mask = (shift_segments == self.model.config.SEGMENT_WYCKOFF) & valid_mask
+            self.log(
+                "val_element_accuracy",
+                element_accuracy,
+                on_epoch=True,
+                sync_dist=True,
+                batch_size=batch_size,
+            )
+
+        wyckoff_mask = (
+            shift_segments == self.model.config.SEGMENT_WYCKOFF
+        ) & valid_mask
         if wyckoff_mask.sum() > 0:
             wyckoff_correct = ((preds == shift_labels) & wyckoff_mask).sum().float()
             wyckoff_accuracy = wyckoff_correct / (wyckoff_mask.sum().float() + 1e-8)
-            self.log("val_wyckoff_accuracy", wyckoff_accuracy, on_epoch=True, sync_dist=True, batch_size=batch_size)
-            
-        coordinate_mask = (shift_segments == self.model.config.SEGMENT_COORDINATE) & valid_mask
+            self.log(
+                "val_wyckoff_accuracy",
+                wyckoff_accuracy,
+                on_epoch=True,
+                sync_dist=True,
+                batch_size=batch_size,
+            )
+
+        coordinate_mask = (
+            shift_segments == self.model.config.SEGMENT_COORDINATE
+        ) & valid_mask
         if coordinate_mask.sum() > 0:
-            coordinate_correct = ((preds == shift_labels) & coordinate_mask).sum().float()
-            coordinate_accuracy = coordinate_correct / (coordinate_mask.sum().float() + 1e-8)
-            self.log("val_coordinate_accuracy", coordinate_accuracy, on_epoch=True, sync_dist=True, batch_size=batch_size)
+            coordinate_correct = (
+                ((preds == shift_labels) & coordinate_mask).sum().float()
+            )
+            coordinate_accuracy = coordinate_correct / (
+                coordinate_mask.sum().float() + 1e-8
+            )
+            self.log(
+                "val_coordinate_accuracy",
+                coordinate_accuracy,
+                on_epoch=True,
+                sync_dist=True,
+                batch_size=batch_size,
+            )
 
         return loss
 
@@ -234,7 +365,9 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         # Get batch size for logging
         batch_size = len(batch["input_ids"])
 
-        self.log("test_loss", loss, on_epoch=True, sync_dist=True, batch_size=batch_size)
+        self.log(
+            "test_loss", loss, on_epoch=True, sync_dist=True, batch_size=batch_size
+        )
         return loss
 
     def configure_optimizers(self):
@@ -421,20 +554,23 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         for i in range(outputs["sequences"].size(0)):
             seq = outputs["sequences"][i].cpu().tolist()
             segments = outputs["segment_ids"][i].cpu().tolist()
-            
+
             # Get continuous predictions if available
             continuous_data = {}
             if self.model.config.prediction_mode == "continuous":
                 # Extract continuous lattice parameters if available
-                if "continuous_lattice_lengths" in outputs and "continuous_lattice_angles" in outputs:
+                if (
+                    "continuous_lattice_lengths" in outputs
+                    and "continuous_lattice_angles" in outputs
+                ):
                     # Get the values for this sequence
                     lengths = outputs["continuous_lattice_lengths"][i].cpu()
                     angles = outputs["continuous_lattice_angles"][i].cpu()
                     continuous_data["lattice_params"] = {
                         "lengths": lengths,
-                        "angles": angles
+                        "angles": angles,
                     }
-                
+
                 # Extract continuous fractional coordinates if available
                 if "continuous_fractional_coords" in outputs:
                     coords = outputs["continuous_fractional_coords"][i].cpu()
@@ -442,10 +578,14 @@ class HierarchicalCrystalTransformerModule(LightningModule):
 
             # Decode to structure (using a helper function, implementation depends on tokenizer)
             if hasattr(self, "decode_to_structure"):
-                structure = self.decode_to_structure(seq, segments, continuous_data=continuous_data)
+                structure = self.decode_to_structure(
+                    seq, segments, continuous_data=continuous_data
+                )
             else:
                 # Basic decoding
-                structure = self._basic_structure_decoding(seq, segments, continuous_data=continuous_data)
+                structure = self._basic_structure_decoding(
+                    seq, segments, continuous_data=continuous_data
+                )
 
             generated_structures.append(structure)
 
@@ -453,7 +593,7 @@ class HierarchicalCrystalTransformerModule(LightningModule):
 
     def _basic_structure_decoding(self, sequence, segments, continuous_data=None):
         """Basic decoding of token sequence to structure representation
-        
+
         Args:
             sequence: List of token IDs
             segments: List of segment IDs
@@ -465,50 +605,75 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         space_group = None
         lattice_params = []
         atoms = []
-        
+
         # Use continuous lattice parameters if available
         has_continuous_lattice = False
         has_continuous_coords = False
-        
+
         # Check explicit continuous prediction flags if available
         if continuous_data:
-            has_continuous_lattice = continuous_data.get("has_continuous_lattice", False)
+            has_continuous_lattice = continuous_data.get(
+                "has_continuous_lattice", False
+            )
             has_continuous_coords = continuous_data.get("has_continuous_coords", False)
-        
+
         # Process continuous lattice parameters if available
-        if continuous_data and ("lattice_params" in continuous_data or 
-                              ("continuous_lattice_lengths" in continuous_data and "continuous_lattice_angles" in continuous_data)):
+        if continuous_data and (
+            "lattice_params" in continuous_data
+            or (
+                "continuous_lattice_lengths" in continuous_data
+                and "continuous_lattice_angles" in continuous_data
+            )
+        ):
             # Handle both formats for backward compatibility
             if "lattice_params" in continuous_data:
                 lattice_data = continuous_data["lattice_params"]
                 if "lengths" in lattice_data and "angles" in lattice_data:
                     # Use the predicted continuous values
-                    if isinstance(lattice_data["lengths"], torch.Tensor) and lattice_data["lengths"].numel() >= 3:
+                    if (
+                        isinstance(lattice_data["lengths"], torch.Tensor)
+                        and lattice_data["lengths"].numel() >= 3
+                    ):
                         # Extract a, b, c from lengths tensor
                         a, b, c = lattice_data["lengths"][:3].tolist()
                         lattice_params.extend([a, b, c])
                         has_continuous_lattice = True
-                    
-                    if isinstance(lattice_data["angles"], torch.Tensor) and lattice_data["angles"].numel() >= 3:
+
+                    if (
+                        isinstance(lattice_data["angles"], torch.Tensor)
+                        and lattice_data["angles"].numel() >= 3
+                    ):
                         # Extract alpha, beta, gamma from angles tensor
                         alpha, beta, gamma = lattice_data["angles"][:3].tolist()
                         lattice_params.extend([alpha, beta, gamma])
                         has_continuous_lattice = True
             else:
                 # Direct continuous prediction tensors
-                if isinstance(continuous_data.get("continuous_lattice_lengths"), torch.Tensor):
+                if isinstance(
+                    continuous_data.get("continuous_lattice_lengths"), torch.Tensor
+                ):
                     lengths = continuous_data["continuous_lattice_lengths"]
                     if lengths.numel() >= 3:
                         # Get the last prediction for this sequence
-                        a, b, c = lengths[-3:].tolist() if lengths.dim() == 1 else lengths[0, :3].tolist()
+                        a, b, c = (
+                            lengths[-3:].tolist()
+                            if lengths.dim() == 1
+                            else lengths[0, :3].tolist()
+                        )
                         lattice_params.extend([a, b, c])
                         has_continuous_lattice = True
-                
-                if isinstance(continuous_data.get("continuous_lattice_angles"), torch.Tensor):
+
+                if isinstance(
+                    continuous_data.get("continuous_lattice_angles"), torch.Tensor
+                ):
                     angles = continuous_data["continuous_lattice_angles"]
                     if angles.numel() >= 3:
                         # Get the last prediction for this sequence
-                        alpha, beta, gamma = angles[-3:].tolist() if angles.dim() == 1 else angles[0, :3].tolist()
+                        alpha, beta, gamma = (
+                            angles[-3:].tolist()
+                            if angles.dim() == 1
+                            else angles[0, :3].tolist()
+                        )
                         lattice_params.extend([alpha, beta, gamma])
                         has_continuous_lattice = True
 
@@ -606,62 +771,85 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         # Use continuous fractional coordinates if available
         # This implementation simplifies the coordinate handling and would need to be
         # expanded in a real application to properly align atoms and coordinates
-        if continuous_data and ("fractional_coords" in continuous_data or "continuous_fractional_coords" in continuous_data):
+        if continuous_data and (
+            "fractional_coords" in continuous_data
+            or "continuous_fractional_coords" in continuous_data
+        ):
             # Handle both formats for backward compatibility
             if "fractional_coords" in continuous_data:
                 coords_tensor = continuous_data["fractional_coords"]
             else:
                 coords_tensor = continuous_data["continuous_fractional_coords"]
-                
+
             if isinstance(coords_tensor, torch.Tensor) and coords_tensor.size(-1) == 3:
                 # We have proper coordinate predictions (num_atoms, 3)
                 has_continuous_coords = True
-                
+
                 # Ensure we have some atoms defined even if none found from discrete tokens
-                if len(atoms) == 0 and has_continuous_lattice and "elements" in continuous_data:
+                if (
+                    len(atoms) == 0
+                    and has_continuous_lattice
+                    and "elements" in continuous_data
+                ):
                     # Try to create atoms from predicted elements if available
                     elements = continuous_data["elements"]
                     if isinstance(elements, list) and len(elements) > 0:
                         # Create basic atoms with predicted elements
                         for i, elem in enumerate(elements):
-                            atoms.append({
-                                "element": elem,
-                                "wyckoff": "a",  # Default Wyckoff position
-                                "coords": []  # Will be filled below
-                            })
+                            atoms.append(
+                                {
+                                    "element": elem,
+                                    "wyckoff": "a",  # Default Wyckoff position
+                                    "coords": [],  # Will be filled below
+                                }
+                            )
                     else:
                         # Create generic atoms if no elements predicted
-                        num_coords = coords_tensor.size(0) if coords_tensor.dim() == 2 else coords_tensor.size(0) // 3
+                        num_coords = (
+                            coords_tensor.size(0)
+                            if coords_tensor.dim() == 2
+                            else coords_tensor.size(0) // 3
+                        )
                         for i in range(num_coords):
-                            atoms.append({
-                                "element": "X",  # Generic element
-                                "wyckoff": "a",  # Default Wyckoff position
-                                "coords": []  # Will be filled below
-                            })
-                
+                            atoms.append(
+                                {
+                                    "element": "X",  # Generic element
+                                    "wyckoff": "a",  # Default Wyckoff position
+                                    "coords": [],  # Will be filled below
+                                }
+                            )
+
                 # Update atoms with continuous coordinates
                 if len(atoms) > 0:
                     # Prepare coordinates
                     if coords_tensor.dim() == 1:
-                        coords_tensor = coords_tensor.view(-1, 3)  # Reshape to (num_atoms, 3)
-                        
+                        coords_tensor = coords_tensor.view(
+                            -1, 3
+                        )  # Reshape to (num_atoms, 3)
+
                     # Limit to the number of atoms we have
                     num_atoms = min(len(atoms), coords_tensor.size(0))
                     for i in range(num_atoms):
                         # Convert tensor coordinates to list
                         atoms[i]["coords"] = coords_tensor[i].tolist()
-                    
+
                     # If we have more predicted coordinates than atoms, create generic atoms
                     if coords_tensor.size(0) > len(atoms) and has_continuous_lattice:
                         for i in range(len(atoms), coords_tensor.size(0)):
-                            atoms.append({
-                                "element": "X",  # Generic element
-                                "wyckoff": "a",  # Default Wyckoff position
-                                "coords": coords_tensor[i].tolist()
-                            })
-        
+                            atoms.append(
+                                {
+                                    "element": "X",  # Generic element
+                                    "wyckoff": "a",  # Default Wyckoff position
+                                    "coords": coords_tensor[i].tolist(),
+                                }
+                            )
+
         # Add the last atom if it exists and we're not using continuous coordinates
-        if not has_continuous_coords and current_element is not None and len(current_coords) > 0:
+        if (
+            not has_continuous_coords
+            and current_element is not None
+            and len(current_coords) > 0
+        ):
             atoms.append(
                 {
                     "element": current_element,

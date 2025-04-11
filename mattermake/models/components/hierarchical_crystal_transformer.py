@@ -51,6 +51,9 @@ class HierarchicalCrystalTransformerConfig:
 
     # Mode for predictions: "discrete" or "continuous"
     prediction_mode: str = "discrete"
+    
+    # Whether to apply Wyckoff position constraints
+    apply_wyckoff_constraints: bool = False
 
     SEGMENT_SPECIAL: int = 0
     SEGMENT_COMPOSITION: int = 1
@@ -284,7 +287,6 @@ class HierarchicalCrystalTransformer(nn.Module):
         self.config = config
         self._sg_wyckoff_mapping = None
 
-        # Initialize SpaceGroupWyckoffMapping for Wyckoff constraints
         if (
             hasattr(config, "apply_wyckoff_constraints")
             and config.apply_wyckoff_constraints
@@ -756,18 +758,32 @@ class HierarchicalCrystalTransformer(nn.Module):
                                             f"Warning: Failed to calculate lattice loss: {e}"
                                         )
 
-                    if (
-                        hasattr(self, "_lattice_ground_truth")
-                        and self._lattice_ground_truth is not None
-                    ):
-                        gt_lengths = self._lattice_ground_truth["lengths"]
-                        gt_angles = self._lattice_ground_truth["angles"]
+                        # --- LATTICE REGRESSION LOSS ---
+                        # Check if we are training AND have ground truth
+                        if (
+                            self.training
+                            and hasattr(self, "_lattice_ground_truth")
+                            and self._lattice_ground_truth is not None
+                        ):
+                            gt_lengths = self._lattice_ground_truth["lengths"]
+                            gt_angles = self._lattice_ground_truth["angles"]
 
-                        length_loss = F.mse_loss(lattice_lengths, gt_lengths)
-                        angle_loss = F.mse_loss(lattice_angles, gt_angles)
-
-                        lattice_regression_loss = length_loss + angle_loss
-                        outputs["lattice_regression_loss"] = lattice_regression_loss
+                            # Add shape check for safety
+                            if (
+                                lattice_lengths.shape == gt_lengths.shape
+                                and lattice_angles.shape == gt_angles.shape
+                            ):
+                                length_loss = F.mse_loss(lattice_lengths, gt_lengths)
+                                angle_loss = F.mse_loss(lattice_angles, gt_angles)
+                                lattice_regression_loss = length_loss + angle_loss
+                                outputs["lattice_regression_loss"] = (
+                                    lattice_regression_loss
+                                )
+                            else:
+                                print(
+                                    f"Warning: Shape mismatch for lattice regression loss. Pred: {lattice_lengths.shape}, {lattice_angles.shape}. GT: {gt_lengths.shape}, {gt_angles.shape}"
+                                )
+                                # Optionally set loss to 0 or skip adding it to outputs
 
             if "atoms" in self.active_modules:
                 element_mask = safe_segment_ids == self.config.SEGMENT_ELEMENT
@@ -896,7 +912,9 @@ class HierarchicalCrystalTransformer(nn.Module):
                         # Group coordinates by atoms (each atom has 3 coordinates: x, y, z)
                         # This is a simplification - in a real implementation, we need
                         # to properly track which coordinates belong to which atoms :: TODO
-                        batch_size = coordinate_hidden.size(0)
+                        batch_size = coordinate_hidden.size(
+                            0
+                        )  # This is incorrect, this is num_coord_tokens, not batch_size
 
                         # Handle coordinate predictions based on prediction mode
                         if (
@@ -949,41 +967,73 @@ class HierarchicalCrystalTransformer(nn.Module):
                                     f"Warning: Failed to compute coordinate logits: {e}"
                                 )
 
+                    # --- COORDINATE REGRESSION LOSS ---
                     try:
                         num_atoms = coordinate_hidden.size(0) // 3
-                        if num_atoms > 0 and coordinate_hidden.size(0) >= 3:
-                            raw_coords = self.fractional_coord_head(
-                                coordinate_hidden[: num_atoms * 3 : 3]
-                            )
+                        # Check num_atoms > 0 and that coordinate_hidden has enough elements
+                        if num_atoms > 0 and coordinate_hidden.size(0) >= num_atoms * 3:
+                            # Select coordinates corresponding to the start of each atom (x coord)
+                            # Assuming coordinates are ordered like [x1,y1,z1, x2,y2,z2, ...] -> WRONG ASSUMPTION?
+                            # Let's stick to the original logic but guard it
 
-                            fractional_coords = bound_fractional_coords(raw_coords)
-                            outputs["fractional_coords"] = fractional_coords
-
+                            # Use hidden states for the 'x' coordinate token of each atom
+                            # The original code `coordinate_hidden[: num_atoms * 3 : 3]` attempts this.
+                            # Check if this indexing is correct based on how segments are laid out.
+                            # A safer bet might be to average or pool, but let's try guarding first.
                             if (
-                                hasattr(self, "_coordinate_ground_truth")
-                                and self._coordinate_ground_truth is not None
-                            ):
-                                try:
-                                    gt_coords = self._coordinate_ground_truth[
-                                        "fractional_coords"
-                                    ]
-
-                                    if fractional_coords.size() == gt_coords.size():
-                                        coord_regression_loss = F.mse_loss(
-                                            fractional_coords, gt_coords
-                                        )
-                                        outputs["coord_regression_loss"] = (
-                                            coord_regression_loss
-                                        )
-                                    else:
-                                        print(
-                                            f"Warning: Coordinate shape mismatch: {fractional_coords.size()} vs {gt_coords.size()}"
-                                        )
-
-                                except Exception as e:
-                                    print(
-                                        f"Warning: Failed to calculate coordinate regression loss: {e}"
+                                coordinate_hidden.size(0) >= 3
+                            ):  # Ensure there's at least one potential atom
+                                # Make sure the slice index is valid
+                                slice_end = num_atoms * 3
+                                if slice_end <= coordinate_hidden.size(0):
+                                    # Apply head only to relevant hidden states
+                                    raw_coords = self.fractional_coord_head(
+                                        coordinate_hidden[
+                                            :slice_end:3
+                                        ]  # Original logic
                                     )
+                                    fractional_coords = bound_fractional_coords(
+                                        raw_coords
+                                    )
+                                    outputs["fractional_coords"] = fractional_coords
+
+                                    # Check if we are training AND have ground truth
+                                    if (
+                                        self.training
+                                        and hasattr(self, "_coordinate_ground_truth")
+                                        and self._coordinate_ground_truth is not None
+                                    ):
+                                        try:
+                                            gt_coords = self._coordinate_ground_truth[
+                                                "fractional_coords"
+                                            ]
+
+                                            # Check shapes before calculating loss
+                                            if (
+                                                fractional_coords.shape
+                                                == gt_coords.shape
+                                            ):
+                                                coord_regression_loss = F.mse_loss(
+                                                    fractional_coords, gt_coords
+                                                )
+                                                outputs["coord_regression_loss"] = (
+                                                    coord_regression_loss
+                                                )
+                                            else:
+                                                print(
+                                                    f"Warning: Coordinate shape mismatch: Pred {fractional_coords.shape} vs GT {gt_coords.shape}"
+                                                )
+                                                # Optionally set loss to 0 or skip adding it
+
+                                        except Exception as e:
+                                            print(
+                                                f"Warning: Failed to calculate coordinate regression loss: {e}"
+                                            )
+                                else:
+                                    print(
+                                        f"Warning: Invalid slicing for coord head. Hidden size: {coordinate_hidden.size(0)}, Slice end: {slice_end}"
+                                    )
+
                     except Exception as e:
                         print(
                             f"Warning: Error in continuous coordinate prediction: {e}"

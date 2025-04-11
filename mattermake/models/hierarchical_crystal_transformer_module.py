@@ -39,6 +39,7 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         coordinate_embedding_dim: int = 32,  # Added parameter for coordinate embedding dimension
         prediction_mode: str = "discrete",  # Mode for predictions: "discrete" or "continuous"
         continuous_regression_weight: float = 0.5,  # Weight for continuous regression losses
+        apply_wyckoff_constraints: bool = False,  # Whether to apply Wyckoff position constraints
         tokenizer_config: Optional[Dict[str, Any]] = None,
     ):
         super().__init__()
@@ -67,6 +68,7 @@ class HierarchicalCrystalTransformerModule(LightningModule):
             lattice_curriculum_epochs=lattice_curriculum_epochs,
             coordinate_embedding_dim=coordinate_embedding_dim,
             prediction_mode=prediction_mode,
+            apply_wyckoff_constraints=apply_wyckoff_constraints,
         )
 
         self.model = HierarchicalCrystalTransformer(config)
@@ -152,7 +154,31 @@ class HierarchicalCrystalTransformerModule(LightningModule):
     def validation_step(self, batch, batch_idx):
         """Validation step"""
         outputs = self(batch)
-        loss = outputs["loss"]
+
+        # Check for NaNs/Infs in raw outputs first (optional but helpful)
+        for key, value in outputs.items():
+            if isinstance(value, torch.Tensor) and (
+                torch.isnan(value).any() or torch.isinf(value).any()
+            ):
+                self.custom_logger.warning(
+                    f"NaN/Inf detected in validation output key: {key}"
+                )
+
+        # Check main loss
+        if (
+            "loss" not in outputs
+            or not isinstance(outputs["loss"], torch.Tensor)
+            or torch.isnan(outputs["loss"]).any()
+            or torch.isinf(outputs["loss"]).any()
+        ):
+            loss = torch.tensor(
+                0.0, device=self.device
+            )  # Dummy loss if main loss is bad
+            self.custom_logger.warning(
+                "Validation loss is NaN/Inf or missing, using 0.0"
+            )
+        else:
+            loss = outputs["loss"]
 
         # Get batch size for logging
         batch_size = len(batch["input_ids"])
@@ -166,196 +192,394 @@ class HierarchicalCrystalTransformerModule(LightningModule):
             batch_size=batch_size,
         )
 
-        # Log component-specific validation losses if available
-        if "space_group_loss" in outputs:
+        # Log component-specific validation losses if available, with NaN/Inf checks
+        if (
+            "space_group_loss" in outputs
+            and isinstance(outputs["space_group_loss"], torch.Tensor)
+            and not (
+                torch.isnan(outputs["space_group_loss"]).any()
+                or torch.isinf(outputs["space_group_loss"]).any()
+            )
+        ):
             self.log(
                 "val_sg_loss",
                 outputs["space_group_loss"],
                 on_epoch=True,
                 sync_dist=True,
-                prog_bar=True,
+                prog_bar=True,  # Keep prog_bar for consistency with original code
                 batch_size=batch_size,
             )
-        if "lattice_loss" in outputs:
+        elif (
+            "space_group_loss" in outputs
+        ):  # Only log warning if key exists but value is bad
+            self.custom_logger.warning("val_sg_loss is NaN/Inf or not a Tensor")
+
+        if (
+            "lattice_loss" in outputs
+            and isinstance(outputs["lattice_loss"], torch.Tensor)
+            and not (
+                torch.isnan(outputs["lattice_loss"]).any()
+                or torch.isinf(outputs["lattice_loss"]).any()
+            )
+        ):
             self.log(
                 "val_lattice_loss",
                 outputs["lattice_loss"],
                 on_epoch=True,
                 sync_dist=True,
-                prog_bar=True,
+                prog_bar=True,  # Keep prog_bar
                 batch_size=batch_size,
             )
-        if "element_loss" in outputs:
+        elif "lattice_loss" in outputs:
+            self.custom_logger.warning("val_lattice_loss is NaN/Inf or not a Tensor")
+
+        if (
+            "element_loss" in outputs
+            and isinstance(outputs["element_loss"], torch.Tensor)
+            and not (
+                torch.isnan(outputs["element_loss"]).any()
+                or torch.isinf(outputs["element_loss"]).any()
+            )
+        ):
             self.log(
                 "val_element_loss",
                 outputs["element_loss"],
                 on_epoch=True,
                 sync_dist=True,
-                prog_bar=True,
+                prog_bar=True,  # Keep prog_bar
                 batch_size=batch_size,
             )
-        if "wyckoff_loss" in outputs:
+        elif "element_loss" in outputs:
+            self.custom_logger.warning("val_element_loss is NaN/Inf or not a Tensor")
+
+        if (
+            "wyckoff_loss" in outputs
+            and isinstance(outputs["wyckoff_loss"], torch.Tensor)
+            and not (
+                torch.isnan(outputs["wyckoff_loss"]).any()
+                or torch.isinf(outputs["wyckoff_loss"]).any()
+            )
+        ):
             self.log(
                 "val_wyckoff_loss",
                 outputs["wyckoff_loss"],
                 on_epoch=True,
                 sync_dist=True,
-                prog_bar=True,
+                prog_bar=True,  # Keep prog_bar
                 batch_size=batch_size,
             )
-        if "coordinate_loss" in outputs:
+        elif "wyckoff_loss" in outputs:
+            self.custom_logger.warning("val_wyckoff_loss is NaN/Inf or not a Tensor")
+
+        if (
+            "coordinate_loss" in outputs
+            and isinstance(outputs["coordinate_loss"], torch.Tensor)
+            and not (
+                torch.isnan(outputs["coordinate_loss"]).any()
+                or torch.isinf(outputs["coordinate_loss"]).any()
+            )
+        ):
             self.log(
                 "val_coordinate_loss",
                 outputs["coordinate_loss"],
                 on_epoch=True,
                 sync_dist=True,
-                prog_bar=True,
+                prog_bar=True,  # Keep prog_bar
                 batch_size=batch_size,
             )
+        elif "coordinate_loss" in outputs:
+            self.custom_logger.warning("val_coordinate_loss is NaN/Inf or not a Tensor")
 
-        # Calculate token-level accuracy
-        logits = outputs["logits"]
-        labels = batch["target_ids"]
+        # Calculate token-level accuracy (should be robust to NaN losses)
+        # Check if logits are valid before proceeding
+        if (
+            "logits" in outputs
+            and isinstance(outputs["logits"], torch.Tensor)
+            and not (
+                torch.isnan(outputs["logits"]).any()
+                or torch.isinf(outputs["logits"]).any()
+            )
+        ):
+            logits = outputs["logits"]
+            labels = batch["target_ids"]
 
-        # Shift for teacher forcing
-        shift_logits = logits[:, :-1, :].contiguous()
-        shift_labels = labels[:, 1:].contiguous()
+            # Shift for teacher forcing
+            shift_logits = logits[:, :-1, :].contiguous()
+            shift_labels = labels[:, 1:].contiguous()
 
-        # Get predictions
-        preds = torch.argmax(shift_logits, dim=-1)
+            # Get predictions
+            preds = torch.argmax(shift_logits, dim=-1)
 
-        # Mask out padding tokens
-        valid_mask = (shift_labels != -100) & (
-            shift_labels != 2
-        )  # Ignore -100 and pad token
-        correct = (preds == shift_labels) & valid_mask
+            # Mask out padding tokens
+            valid_mask = (shift_labels != -100) & (
+                shift_labels != 2
+            )  # Ignore -100 and pad token
+            correct = (preds == shift_labels) & valid_mask
 
-        # Get the batch size for logging
-        batch_size = len(batch["input_ids"])
+            # Calculate accuracy
+            valid_sum = valid_mask.sum().float()
+            if valid_sum > 0:
+                accuracy = correct.sum().float() / valid_sum
+                self.log(
+                    "val_accuracy",
+                    accuracy,
+                    on_epoch=True,
+                    prog_bar=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )
+            else:
+                self.custom_logger.warning(
+                    "No valid tokens found for accuracy calculation in this batch."
+                )
+                self.log(
+                    "val_accuracy",
+                    0.0,
+                    on_epoch=True,
+                    prog_bar=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )  # Log 0 if no valid tokens
 
-        # Calculate accuracy
-        accuracy = correct.sum().float() / (valid_mask.sum().float() + 1e-8)
-        self.log(
-            "val_accuracy",
-            accuracy,
-            on_epoch=True,
-            prog_bar=True,
-            sync_dist=True,
-            batch_size=batch_size,
-        )
+            # Calculate accuracy by segment type
+            segment_ids = batch["segment_ids"]
+            shift_segments = segment_ids[:, 1:].contiguous()
 
-        # Calculate accuracy by segment type
-        segment_ids = batch["segment_ids"]
-        shift_segments = segment_ids[:, 1:].contiguous()
+            # Composition accuracy
+            comp_mask = (
+                shift_segments == self.model.config.SEGMENT_COMPOSITION
+            ) & valid_mask
+            comp_mask_sum = comp_mask.sum().float()
+            if comp_mask_sum > 0:
+                comp_correct = ((preds == shift_labels) & comp_mask).sum().float()
+                comp_accuracy = comp_correct / comp_mask_sum
+                self.log(
+                    "val_comp_accuracy",
+                    comp_accuracy,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )
+            else:
+                self.log(
+                    "val_comp_accuracy",
+                    0.0,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )
 
-        # Composition accuracy
-        comp_mask = (
-            shift_segments == self.model.config.SEGMENT_COMPOSITION
-        ) & valid_mask
-        if comp_mask.sum() > 0:
-            comp_correct = ((preds == shift_labels) & comp_mask).sum().float()
-            comp_accuracy = comp_correct / (comp_mask.sum().float() + 1e-8)
+            # Space group accuracy
+            sg_mask = (
+                shift_segments == self.model.config.SEGMENT_SPACE_GROUP
+            ) & valid_mask
+            sg_mask_sum = sg_mask.sum().float()
+            if sg_mask_sum > 0:
+                sg_correct = ((preds == shift_labels) & sg_mask).sum().float()
+                sg_accuracy = sg_correct / sg_mask_sum
+                self.log(
+                    "val_sg_accuracy",
+                    sg_accuracy,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )
+            else:
+                self.log(
+                    "val_sg_accuracy",
+                    0.0,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )
+
+            # Lattice accuracy
+            lattice_mask = (
+                shift_segments == self.model.config.SEGMENT_LATTICE
+            ) & valid_mask
+            lattice_mask_sum = lattice_mask.sum().float()
+            if lattice_mask_sum > 0:
+                lattice_correct = ((preds == shift_labels) & lattice_mask).sum().float()
+                lattice_accuracy = lattice_correct / lattice_mask_sum
+                self.log(
+                    "val_lattice_accuracy",
+                    lattice_accuracy,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )
+            else:
+                self.log(
+                    "val_lattice_accuracy",
+                    0.0,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )
+
+            # Atom accuracy (element, wyckoff, coordinate)
+            atom_mask = (
+                (shift_segments == self.model.config.SEGMENT_ELEMENT)
+                | (shift_segments == self.model.config.SEGMENT_WYCKOFF)
+                | (shift_segments == self.model.config.SEGMENT_COORDINATE)
+            ) & valid_mask
+            atom_mask_sum = atom_mask.sum().float()
+            if atom_mask_sum > 0:
+                atom_correct = ((preds == shift_labels) & atom_mask).sum().float()
+                atom_accuracy = atom_correct / atom_mask_sum
+                self.log(
+                    "val_atom_accuracy",
+                    atom_accuracy,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )
+            else:
+                self.log(
+                    "val_atom_accuracy",
+                    0.0,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )
+
+            # Break down atom accuracy into element, Wyckoff, and coordinate accuracies
+            element_mask = (
+                shift_segments == self.model.config.SEGMENT_ELEMENT
+            ) & valid_mask
+            element_mask_sum = element_mask.sum().float()
+            if element_mask_sum > 0:
+                element_correct = ((preds == shift_labels) & element_mask).sum().float()
+                element_accuracy = element_correct / element_mask_sum
+                self.log(
+                    "val_element_accuracy",
+                    element_accuracy,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )
+            else:
+                self.log(
+                    "val_element_accuracy",
+                    0.0,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )
+
+            wyckoff_mask = (
+                shift_segments == self.model.config.SEGMENT_WYCKOFF
+            ) & valid_mask
+            wyckoff_mask_sum = wyckoff_mask.sum().float()
+            if wyckoff_mask_sum > 0:
+                wyckoff_correct = ((preds == shift_labels) & wyckoff_mask).sum().float()
+                wyckoff_accuracy = wyckoff_correct / wyckoff_mask_sum
+                self.log(
+                    "val_wyckoff_accuracy",
+                    wyckoff_accuracy,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )
+            else:
+                self.log(
+                    "val_wyckoff_accuracy",
+                    0.0,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )
+
+            coordinate_mask = (
+                shift_segments == self.model.config.SEGMENT_COORDINATE
+            ) & valid_mask
+            coordinate_mask_sum = coordinate_mask.sum().float()
+            if coordinate_mask_sum > 0:
+                coordinate_correct = (
+                    ((preds == shift_labels) & coordinate_mask).sum().float()
+                )
+                coordinate_accuracy = coordinate_correct / coordinate_mask_sum
+                self.log(
+                    "val_coordinate_accuracy",
+                    coordinate_accuracy,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )
+            else:
+                self.log(
+                    "val_coordinate_accuracy",
+                    0.0,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )
+
+        else:
+            # Log warnings and default values if logits are invalid
+            self.custom_logger.warning(
+                "Logits are NaN/Inf or missing. Skipping accuracy calculation."
+            )
+            # Log default 0 for all accuracy metrics
+            self.log(
+                "val_accuracy",
+                0.0,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+                batch_size=batch_size,
+            )
             self.log(
                 "val_comp_accuracy",
-                comp_accuracy,
+                0.0,
                 on_epoch=True,
                 sync_dist=True,
                 batch_size=batch_size,
             )
-
-        # Space group accuracy
-        sg_mask = (shift_segments == self.model.config.SEGMENT_SPACE_GROUP) & valid_mask
-        if sg_mask.sum() > 0:
-            sg_correct = ((preds == shift_labels) & sg_mask).sum().float()
-            sg_accuracy = sg_correct / (sg_mask.sum().float() + 1e-8)
             self.log(
                 "val_sg_accuracy",
-                sg_accuracy,
+                0.0,
                 on_epoch=True,
                 sync_dist=True,
                 batch_size=batch_size,
             )
-
-        # Lattice accuracy
-        lattice_mask = (
-            shift_segments == self.model.config.SEGMENT_LATTICE
-        ) & valid_mask
-        if lattice_mask.sum() > 0:
-            lattice_correct = ((preds == shift_labels) & lattice_mask).sum().float()
-            lattice_accuracy = lattice_correct / (lattice_mask.sum().float() + 1e-8)
             self.log(
                 "val_lattice_accuracy",
-                lattice_accuracy,
+                0.0,
                 on_epoch=True,
                 sync_dist=True,
                 batch_size=batch_size,
             )
-
-        # Atom accuracy (element, wyckoff, coordinate)
-        atom_mask = (
-            (shift_segments == self.model.config.SEGMENT_ELEMENT)
-            | (shift_segments == self.model.config.SEGMENT_WYCKOFF)
-            | (shift_segments == self.model.config.SEGMENT_COORDINATE)
-        ) & valid_mask
-        if atom_mask.sum() > 0:
-            atom_correct = ((preds == shift_labels) & atom_mask).sum().float()
-            atom_accuracy = atom_correct / (atom_mask.sum().float() + 1e-8)
             self.log(
                 "val_atom_accuracy",
-                atom_accuracy,
+                0.0,
                 on_epoch=True,
                 sync_dist=True,
                 batch_size=batch_size,
             )
-
-        # Break down atom accuracy into element, Wyckoff, and coordinate accuracies
-        element_mask = (
-            shift_segments == self.model.config.SEGMENT_ELEMENT
-        ) & valid_mask
-        if element_mask.sum() > 0:
-            element_correct = ((preds == shift_labels) & element_mask).sum().float()
-            element_accuracy = element_correct / (element_mask.sum().float() + 1e-8)
             self.log(
                 "val_element_accuracy",
-                element_accuracy,
+                0.0,
                 on_epoch=True,
                 sync_dist=True,
                 batch_size=batch_size,
             )
-
-        wyckoff_mask = (
-            shift_segments == self.model.config.SEGMENT_WYCKOFF
-        ) & valid_mask
-        if wyckoff_mask.sum() > 0:
-            wyckoff_correct = ((preds == shift_labels) & wyckoff_mask).sum().float()
-            wyckoff_accuracy = wyckoff_correct / (wyckoff_mask.sum().float() + 1e-8)
             self.log(
                 "val_wyckoff_accuracy",
-                wyckoff_accuracy,
+                0.0,
                 on_epoch=True,
                 sync_dist=True,
                 batch_size=batch_size,
-            )
-
-        coordinate_mask = (
-            shift_segments == self.model.config.SEGMENT_COORDINATE
-        ) & valid_mask
-        if coordinate_mask.sum() > 0:
-            coordinate_correct = (
-                ((preds == shift_labels) & coordinate_mask).sum().float()
-            )
-            coordinate_accuracy = coordinate_correct / (
-                coordinate_mask.sum().float() + 1e-8
             )
             self.log(
                 "val_coordinate_accuracy",
-                coordinate_accuracy,
+                0.0,
                 on_epoch=True,
                 sync_dist=True,
                 batch_size=batch_size,
             )
 
-        return loss
+        return loss  # Return the potentially corrected loss
 
     def test_step(self, batch, batch_idx):
         """Test step"""

@@ -28,8 +28,8 @@ ignore_warnings: True
 # set seed for random number generators
 seed: 42
 
-# use 16-bit precision for training
-precision: 16-mixed
+# use bf16 precision for training
+precision: bf16
 
 # compile model for faster training (may not be supported for all model types)
 compile: False

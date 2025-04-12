@@ -32,7 +32,7 @@ class SpaceGroupWyckoffMapping:
         self.wyckoff_list_path = os.path.join(csv_dir, "wyckoff_list.csv")
         self.wyckoff_symbols_path = os.path.join(csv_dir, "wyckoff_symbols.csv")
 
-        logger.info(f"Looking for Wyckoff data in {csv_dir}")
+        # logger.info(f"Looking for Wyckoff data in {csv_dir}")
 
         # Initialize data structures
         self.sg_to_wyckoff = {}

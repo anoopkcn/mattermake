@@ -42,12 +42,6 @@ ckpt_path: null
 
 test: False
 
-# Override some trainer defaults
-
-data:
-  data_dir: ${paths.data_dir}/hct_data_60k
-  processed_data_file: "hct_data.pt"
-
 trainer:
   max_epochs: 50
   gradient_clip_val: 1.0

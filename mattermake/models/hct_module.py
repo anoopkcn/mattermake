@@ -40,6 +40,7 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         prediction_mode: str = "discrete",  # Mode for predictions: "discrete" or "continuous"
         continuous_regression_weight: float = 0.5,  # Weight for continuous regression losses
         apply_wyckoff_constraints: bool = False,  # Whether to apply Wyckoff position constraints
+        use_combined_wyckoff_tokens: bool = True,  # Whether to use combined Wyckoff tokens
         tokenizer_config: Optional[Dict[str, Any]] = None,
     ):
         super().__init__()
@@ -69,6 +70,7 @@ class HierarchicalCrystalTransformerModule(LightningModule):
             coordinate_embedding_dim=coordinate_embedding_dim,
             prediction_mode=prediction_mode,
             apply_wyckoff_constraints=apply_wyckoff_constraints,
+            use_combined_wyckoff_tokens=use_combined_wyckoff_tokens,
         )
 
         self.model = HierarchicalCrystalTransformer(config)

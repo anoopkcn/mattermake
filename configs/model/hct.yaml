@@ -1,4 +1,4 @@
-_target_: mattermake.models.hierarchical_crystal_transformer_module.HierarchicalCrystalTransformerModule
+_target_: mattermake.models.hct_module.HierarchicalCrystalTransformerModule
 
 # Model architecture parameters
 vocab_size: 2000  # Will be overridden by actual tokenizer vocabulary size

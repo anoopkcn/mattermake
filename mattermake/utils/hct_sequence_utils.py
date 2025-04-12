@@ -1,5 +1,37 @@
 from typing import List, Dict, Any, Optional
 from pymatgen.core import Structure, Lattice
+from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def process_structure_from_cif_string(
+    material_id, cif_string, tokenizer, standardize=True, symprec=0.01
+):
+    """Process a structure from a CIF string"""
+    try:
+        structure = Structure.from_str(cif_string, fmt="cif")
+
+        if standardize:
+            sga = SpacegroupAnalyzer(structure, symprec=symprec)
+            structure = sga.get_conventional_standard_structure()
+            space_group = sga.get_space_group_number()
+        else:
+            space_group = None
+
+        token_data = tokenizer.tokenize_structure(structure)
+
+        return {
+            "material_id": material_id,
+            "formula": structure.composition.reduced_formula,
+            "space_group": space_group,
+            "token_data": token_data,
+            "structure": structure,
+        }
+    except Exception as e:
+        logger.error(f"Error processing material {material_id}: {e}")
+        return None
 
 
 def extract_composition_string(structure: Structure) -> str:

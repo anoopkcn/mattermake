@@ -2,8 +2,8 @@
 
 defaults:
   - _self_
-  - data: crystal_sequence.yaml
-  - model:  hierarchical_crystal_transformer.yaml
+  - data: hct_sequence.yaml
+  - model:  hct.yaml
   - callbacks: default.yaml
   - logger: wandb.yaml
   - trainer: default.yaml
@@ -13,7 +13,7 @@ defaults:
   - experiment: null
 
 # task name, determines output directory path
-task_name: "train_crystal_transformer"
+task_name: "train_hct"
 
 # tags to help you identify your experiments
 tags: ["crystal-transformer", "materials-generation"]
@@ -44,7 +44,7 @@ test: False
 
 # Override some trainer defaults
 trainer:
-  max_epochs: 100
+  max_epochs: 50
   gradient_clip_val: 1.0
   log_every_n_steps: 20
 

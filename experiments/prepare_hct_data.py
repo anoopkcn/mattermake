@@ -4,9 +4,8 @@ import argparse
 import warnings
 import pandas as pd
 from tqdm import tqdm
-from pymatgen.core import Structure
-from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from mattermake.data.hct_tokenizer import CrystalTokenizer
+from mattermake.utils.hct_sequence_utils import process_structure_from_cif_string
 
 from mattermake.utils.pylogger import get_pylogger
 
@@ -16,34 +15,6 @@ warnings.filterwarnings(
 )
 
 logger = get_pylogger(__name__)
-
-
-def process_structure_from_cif_string(
-    material_id, cif_string, tokenizer, standardize=True, symprec=0.01
-):
-    """Process a structure from a CIF string"""
-    try:
-        structure = Structure.from_str(cif_string, fmt="cif")
-
-        if standardize:
-            sga = SpacegroupAnalyzer(structure, symprec=symprec)
-            structure = sga.get_conventional_standard_structure()
-            space_group = sga.get_space_group_number()
-        else:
-            space_group = None
-
-        token_data = tokenizer.tokenize_structure(structure)
-
-        return {
-            "material_id": material_id,
-            "formula": structure.composition.reduced_formula,
-            "space_group": space_group,
-            "token_data": token_data,
-            "structure": structure,
-        }
-    except Exception as e:
-        logger.error(f"Error processing material {material_id}: {e}")
-        return None
 
 
 def main():

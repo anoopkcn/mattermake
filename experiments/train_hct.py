@@ -133,7 +133,7 @@ def train(config: DictConfig) -> Optional[float]:
 @hydra.main(
     version_base="1.3",
     config_path="../configs",
-    config_name="train_hierarchical_crystal_transformer",
+    config_name="train_hct",
 )
 def main(config: DictConfig) -> Optional[float]:
     if config.get("debug"):

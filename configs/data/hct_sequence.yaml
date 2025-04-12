@@ -1,4 +1,4 @@
-_target_: mattermake.data.crystal_sequence_datamodule.CrystalSequenceDataModule
+_target_: mattermake.data.hct_sequence_datamodule.CrystalSequenceDataModule
 
 data_dir: ${paths.data_dir}/structure_tokens_100k
 processed_data_file: "processed_crystal_data.pt"

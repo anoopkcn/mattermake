@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 import tempfile
-from .prepare_crystal_data import process_structure_from_cif_string
+from mattermake.utils.hct_sequence_utils import process_structure_from_cif_string
 from mattermake.data.hct_tokenizer import CrystalTokenizer
 
 

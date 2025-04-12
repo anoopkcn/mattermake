@@ -4,8 +4,8 @@
 #SBATCH --ntasks-per-node=4
 #SBATCH --time=24:00:00
 #SBATCH --partition=dc-hwai
-#SBATCH --output=/p/project1/hai_solaihack/chandran1/mattermake/experiments/train_crystal_%j.out
-#SBATCH --error=/p/project1/hai_solaihack/chandran1/mattermake/experiments/train_crystal_%j.err
+#SBATCH --output=/p/project1/hai_solaihack/chandran1/mattermake/experiments/train_hct_%j.out
+#SBATCH --error=/p/project1/hai_solaihack/chandran1/mattermake/experiments/train_hct_%j.err
 
 export PROJECT_ROOT="/p/project1/hai_solaihack/chandran1/mattermake"
 export TOKENIZERS_PARALLELISM=false
@@ -20,7 +20,7 @@ srun --gres=gpu:4 --nodes=${SLURM_JOB_NUM_NODES} --ntasks-per-node=4 --cpu-bind=
     source /p/project1/hai_solaihack/chandran1/mattermake/.venv/bin/activate
     cd /p/home/jusers/chandran1/jureca/hai_solaihack/mattermake/experiments
 
-    python train_hierarchical_crystal_transformer.py \
+    python train_hct.py \
         trainer.max_epochs=50 \
         trainer.num_nodes=$SLURM_JOB_NUM_NODES \
         trainer.devices=4 \

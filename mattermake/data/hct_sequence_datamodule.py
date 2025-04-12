@@ -5,9 +5,9 @@ from torch.utils.data import DataLoader
 from lightning.pytorch import LightningDataModule
 
 import torch.serialization
-from mattermake.data.crystal_tokenizer import CrystalTokenData
+from mattermake.data.hct_tokenizer import CrystalTokenData, CrystalTokenizer
 
-from mattermake.data.crystal_sequence_dataset import (
+from mattermake.data.hct_sequence_dataset import (
     CrystalSequenceDataset,
     collate_crystal_sequences,
 )
@@ -82,8 +82,6 @@ class CrystalSequenceDataModule(LightningDataModule):
         data = torch.load(data_path, weights_only=False)
 
         if "tokenizer_config" in data:
-            from mattermake.data.crystal_tokenizer import CrystalTokenizer
-
             self.tokenizer = CrystalTokenizer(**data["tokenizer_config"])
             self.log.info(
                 f"Initialized tokenizer with vocab size {self.tokenizer.vocab_size}"

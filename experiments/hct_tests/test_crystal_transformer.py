@@ -3,9 +3,9 @@ import torch
 import argparse
 import warnings
 import lightning.pytorch as pl
-from mattermake.data.crystal_tokenizer import CrystalTokenData
-from mattermake.data.crystal_sequence_datamodule import CrystalSequenceDataModule
-from mattermake.models.hierarchical_crystal_transformer_module import (
+from mattermake.data.hct_tokenizer import CrystalTokenData
+from mattermake.data.hct_sequence_datamodule import CrystalSequenceDataModule
+from mattermake.models.hct_module import (
     HierarchicalCrystalTransformerModule,
 )
 from mattermake.utils.pylogger import get_pylogger

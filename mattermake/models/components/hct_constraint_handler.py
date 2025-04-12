@@ -1,6 +1,6 @@
 from typing import Dict, Optional, Any, Tuple
 import torch
-from mattermake.data.components.space_group_wyckoff_mapping import (
+from mattermake.utils.hct_wyckoff_mapping import (
     SpaceGroupWyckoffMapping,
 )
 

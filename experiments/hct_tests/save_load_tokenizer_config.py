@@ -1,4 +1,4 @@
-from mattermake.data.crystal_sequence_datamodule import CrystalSequenceDataModule
+from mattermake.data.hct_sequence_datamodule import CrystalSequenceDataModule
 
 
 def save_tokenizer_config(data_dir, output_path):
@@ -36,12 +36,14 @@ def load_tokenizer_config(config_path):
 
 if __name__ == "__main__":
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="Save or load tokenizer configuration")
-    parser.add_argument("data_dir", help="Directory containing processed data for tokenization")
+    parser.add_argument(
+        "data_dir", help="Directory containing processed data for tokenization"
+    )
     parser.add_argument("output_path", help="Path to save tokenizer configuration JSON")
-    
+
     args = parser.parse_args()
-    
+
     # Save tokenizer config to the specified output path
     save_tokenizer_config(args.data_dir, args.output_path)

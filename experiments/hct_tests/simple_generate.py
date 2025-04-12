@@ -6,10 +6,10 @@ import torch
 import argparse
 from pathlib import Path
 
-from mattermake.models.hierarchical_crystal_transformer_module import (
+from mattermake.models.hct_module import (
     HierarchicalCrystalTransformerModule,
 )
-from mattermake.scripts.save_load_tokenizer_config import load_tokenizer_config
+from .save_load_tokenizer_config import load_tokenizer_config
 from mattermake.utils.pylogger import get_pylogger
 
 logger = get_pylogger(__name__)
@@ -58,7 +58,7 @@ def main():
     parser.add_argument(
         "--use-kv-cache",
         action="store_true",
-        help="Enable KV-caching for faster generation"
+        help="Enable KV-caching for faster generation",
     )
 
     args = parser.parse_args()

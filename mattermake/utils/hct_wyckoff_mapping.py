@@ -27,25 +27,7 @@ class SpaceGroupWyckoffMapping:
             csv_dir: Directory containing the CSV files. If None, looks in the same directory as this file.
         """
         if csv_dir is None:
-            # Default to the directory containing this file
             csv_dir = os.path.dirname(os.path.abspath(__file__))
-            # Go up to data directory
-            csv_dir = os.path.abspath(os.path.join(csv_dir, ".."))
-            # Add data folder
-            csv_dir = os.path.join(csv_dir, "..")
-            # Find data directory in various locations
-            possible_data_dirs = [
-                os.path.join(csv_dir, "data"),  # mattermake/data
-                os.path.join(os.path.dirname(csv_dir), "data"),  # data/
-                os.path.join(
-                    csv_dir, "mattermake", "data"
-                ),  # mattermake/mattermake/data
-            ]
-
-            for directory in possible_data_dirs:
-                if os.path.exists(directory):
-                    csv_dir = directory
-                    break
 
         self.wyckoff_list_path = os.path.join(csv_dir, "wyckoff_list.csv")
         self.wyckoff_symbols_path = os.path.join(csv_dir, "wyckoff_symbols.csv")

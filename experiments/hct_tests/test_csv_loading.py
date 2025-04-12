@@ -1,8 +1,8 @@
 import os
 import pandas as pd
 import tempfile
-from mattermake.scripts.prepare_crystal_data import process_structure_from_cif_string
-from mattermake.data.crystal_tokenizer import CrystalTokenizer
+from .prepare_crystal_data import process_structure_from_cif_string
+from mattermake.data.hct_tokenizer import CrystalTokenizer
 
 
 def create_test_csv(output_path, num_samples=2):

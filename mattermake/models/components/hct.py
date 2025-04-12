@@ -5,7 +5,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from mattermake.models.components.constraint_handler import CrystalConstraintHandler
+from mattermake.models.components.hct_constraint_handler import CrystalConstraintHandler
+from mattermake.utils.hct_wyckoff_mapping import (
+    SpaceGroupWyckoffMapping,
+)
 
 
 @dataclass
@@ -51,7 +54,7 @@ class HierarchicalCrystalTransformerConfig:
 
     # Mode for predictions: "discrete" or "continuous"
     prediction_mode: str = "discrete"
-    
+
     # Whether to apply Wyckoff position constraints
     apply_wyckoff_constraints: bool = False
 
@@ -96,20 +99,20 @@ class MultiHeadAttention(nn.Module):
         use_kv_cache: bool = False,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         batch_size, seq_len, _ = hidden_states.shape
-        
+
         # Initialize new cache or use existing one
         new_cache = None
         cached_k, cached_v = None, None
-        
+
         # Check if we have a valid KV cache to use
         if use_kv_cache and kv_cache is not None:
-            if 'k' in kv_cache and 'v' in kv_cache:
-                cached_k = kv_cache['k']
-                cached_v = kv_cache['v']
-        
+            if "k" in kv_cache and "v" in kv_cache:
+                cached_k = kv_cache["k"]
+                cached_v = kv_cache["v"]
+
         # Process query vectors for all tokens
         q = self.q_proj(hidden_states)
-        
+
         # With KV caching, only process key and value for the new token
         if use_kv_cache and cached_k is not None and cached_v is not None:
             # Only compute k, v for the last token
@@ -119,18 +122,22 @@ class MultiHeadAttention(nn.Module):
             else:
                 new_k = self.k_proj(hidden_states[:, -1:, :])
                 new_v = self.v_proj(hidden_states[:, -1:, :])
-                
+
             # Reshape new keys and values
-            new_k = new_k.view(batch_size, 1, self.num_heads, self.head_size).transpose(1, 2)
-            new_v = new_v.view(batch_size, 1, self.num_heads, self.head_size).transpose(1, 2)
-            
+            new_k = new_k.view(batch_size, 1, self.num_heads, self.head_size).transpose(
+                1, 2
+            )
+            new_v = new_v.view(batch_size, 1, self.num_heads, self.head_size).transpose(
+                1, 2
+            )
+
             # Concatenate with cached keys and values
             k = torch.cat([cached_k, new_k], dim=2)
             v = torch.cat([cached_v, new_v], dim=2)
             kv_seq_len = k.size(2)
-            
+
             # Create new cache
-            new_cache = {'k': k, 'v': v}
+            new_cache = {"k": k, "v": v}
         else:
             # No caching or first token, compute k, v for all tokens
             if key_value_states is not None:
@@ -141,15 +148,19 @@ class MultiHeadAttention(nn.Module):
                 k = self.k_proj(hidden_states)
                 v = self.v_proj(hidden_states)
                 kv_seq_len = seq_len
-            
+
             # Reshape k, v
-            k = k.view(batch_size, kv_seq_len, self.num_heads, self.head_size).transpose(1, 2)
-            v = v.view(batch_size, kv_seq_len, self.num_heads, self.head_size).transpose(1, 2)
-            
+            k = k.view(
+                batch_size, kv_seq_len, self.num_heads, self.head_size
+            ).transpose(1, 2)
+            v = v.view(
+                batch_size, kv_seq_len, self.num_heads, self.head_size
+            ).transpose(1, 2)
+
             # Create new cache
             if use_kv_cache:
-                new_cache = {'k': k, 'v': v}
-        
+                new_cache = {"k": k, "v": v}
+
         # Reshape query
         q = q.view(batch_size, seq_len, self.num_heads, self.head_size).transpose(1, 2)
 
@@ -215,7 +226,7 @@ class MultiHeadAttention(nn.Module):
         )
 
         output = self.out_proj(context)
-        
+
         # Return the output along with the updated cache if KV caching is enabled
         if use_kv_cache and new_cache is not None:
             return output, new_cache
@@ -252,7 +263,7 @@ class TransformerLayer(nn.Module):
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         # Apply attention with optional KV-caching
         normed_hidden_states = self.norm1(hidden_states)
-        
+
         if use_kv_cache:
             attn_output, new_cache = self.attention(
                 normed_hidden_states,
@@ -269,13 +280,13 @@ class TransformerLayer(nn.Module):
                 causal_mask=causal_mask,
                 key_value_states=key_value_states,
             )
-            
+
         hidden_states = hidden_states + self.dropout(attn_output)
 
         # Apply feed-forward network
         ff_output = self.ff_net(self.norm2(hidden_states))
         hidden_states = hidden_states + ff_output
-        
+
         # Return with cache if KV-caching is enabled
         if use_kv_cache:
             return hidden_states, new_cache
@@ -300,7 +311,7 @@ class CrossAttentionLayer(nn.Module):
         use_kv_cache: bool = False,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         normed_hidden_states = self.norm(hidden_states)
-        
+
         if use_kv_cache:
             context_output, new_cache = self.cross_attention(
                 normed_hidden_states,
@@ -368,10 +379,6 @@ class HierarchicalCrystalTransformer(nn.Module):
             hasattr(config, "apply_wyckoff_constraints")
             and config.apply_wyckoff_constraints
         ):
-            from mattermake.data.components.space_group_wyckoff_mapping import (
-                SpaceGroupWyckoffMapping,
-            )
-
             self.sg_wyckoff_mapping = SpaceGroupWyckoffMapping()
 
         self.token_embeddings = nn.Embedding(
@@ -470,11 +477,6 @@ class HierarchicalCrystalTransformer(nn.Module):
                 return None
 
             if self._sg_wyckoff_mapping is None:
-                from mattermake.data.components.space_group_wyckoff_mapping import (
-                    SpaceGroupWyckoffMapping,
-                )
-
-                # This will only run the first time the mapping is accessed
                 self._sg_wyckoff_mapping = SpaceGroupWyckoffMapping()
             return self._sg_wyckoff_mapping
 
@@ -563,8 +565,10 @@ class HierarchicalCrystalTransformer(nn.Module):
 
         if "composition" in self.active_modules:
             for i, layer in enumerate(self.composition_encoder):
-                layer_cache = None if kv_caches is None else kv_caches.get(f"composition_{i}")
-                
+                layer_cache = (
+                    None if kv_caches is None else kv_caches.get(f"composition_{i}")
+                )
+
                 if use_kv_cache and kv_caches is not None:
                     hidden_states, new_cache = layer(
                         hidden_states,
@@ -583,8 +587,10 @@ class HierarchicalCrystalTransformer(nn.Module):
 
         if "space_group" in self.active_modules:
             if self.config.use_cross_attention:
-                cross_attn_cache = None if kv_caches is None else kv_caches.get("sg_from_comp")
-                
+                cross_attn_cache = (
+                    None if kv_caches is None else kv_caches.get("sg_from_comp")
+                )
+
                 if use_kv_cache and kv_caches is not None:
                     hidden_states, new_cache = self.sg_from_comp_attention(
                         hidden_states=hidden_states,
@@ -602,8 +608,10 @@ class HierarchicalCrystalTransformer(nn.Module):
                     )
 
             for i, layer in enumerate(self.space_group_encoder):
-                layer_cache = None if kv_caches is None else kv_caches.get(f"space_group_{i}")
-                
+                layer_cache = (
+                    None if kv_caches is None else kv_caches.get(f"space_group_{i}")
+                )
+
                 if use_kv_cache and kv_caches is not None:
                     hidden_states, new_cache = layer(
                         hidden_states,
@@ -623,8 +631,10 @@ class HierarchicalCrystalTransformer(nn.Module):
         if "lattice" in self.active_modules:
             if self.config.use_cross_attention:
                 context_mask = (comp_mask | sg_mask).unsqueeze(1).unsqueeze(2)
-                cross_attn_cache = None if kv_caches is None else kv_caches.get("lattice_from_sg")
-                
+                cross_attn_cache = (
+                    None if kv_caches is None else kv_caches.get("lattice_from_sg")
+                )
+
                 if use_kv_cache and kv_caches is not None:
                     hidden_states, new_cache = self.lattice_from_sg_attention(
                         hidden_states=hidden_states,
@@ -642,8 +652,10 @@ class HierarchicalCrystalTransformer(nn.Module):
                     )
 
             for i, layer in enumerate(self.lattice_encoder):
-                layer_cache = None if kv_caches is None else kv_caches.get(f"lattice_{i}")
-                
+                layer_cache = (
+                    None if kv_caches is None else kv_caches.get(f"lattice_{i}")
+                )
+
                 if use_kv_cache and kv_caches is not None:
                     hidden_states, new_cache = layer(
                         hidden_states,
@@ -665,8 +677,10 @@ class HierarchicalCrystalTransformer(nn.Module):
                 context_mask = (
                     (comp_mask | sg_mask | lattice_mask).unsqueeze(1).unsqueeze(2)
                 )
-                cross_attn_cache = None if kv_caches is None else kv_caches.get("atom_from_lattice")
-                
+                cross_attn_cache = (
+                    None if kv_caches is None else kv_caches.get("atom_from_lattice")
+                )
+
                 if use_kv_cache and kv_caches is not None:
                     hidden_states, new_cache = self.atom_from_lattice_attention(
                         hidden_states=hidden_states,
@@ -690,7 +704,7 @@ class HierarchicalCrystalTransformer(nn.Module):
 
             for i, layer in enumerate(self.atom_encoder):
                 layer_cache = None if kv_caches is None else kv_caches.get(f"atom_{i}")
-                
+
                 if use_kv_cache and kv_caches is not None:
                     hidden_states, new_cache = layer(
                         hidden_states,
@@ -712,8 +726,10 @@ class HierarchicalCrystalTransformer(nn.Module):
                     )
 
         for i, layer in enumerate(self.integration_layers):
-            layer_cache = None if kv_caches is None else kv_caches.get(f"integration_{i}")
-            
+            layer_cache = (
+                None if kv_caches is None else kv_caches.get(f"integration_{i}")
+            )
+
             if use_kv_cache and kv_caches is not None:
                 hidden_states, new_cache = layer(
                     hidden_states,
@@ -1326,15 +1342,24 @@ class HierarchicalCrystalTransformer(nn.Module):
         if use_kv_cache:
             kv_caches = {
                 # Composition encoder layers
-                **{f"composition_{i}": None for i in range(len(self.composition_encoder))},
+                **{
+                    f"composition_{i}": None
+                    for i in range(len(self.composition_encoder))
+                },
                 # Space group encoder layers
-                **{f"space_group_{i}": None for i in range(len(self.space_group_encoder))},
+                **{
+                    f"space_group_{i}": None
+                    for i in range(len(self.space_group_encoder))
+                },
                 # Lattice encoder layers
                 **{f"lattice_{i}": None for i in range(len(self.lattice_encoder))},
                 # Atom encoder layers
                 **{f"atom_{i}": None for i in range(len(self.atom_encoder))},
                 # Integration layers
-                **{f"integration_{i}": None for i in range(len(self.integration_layers))},
+                **{
+                    f"integration_{i}": None
+                    for i in range(len(self.integration_layers))
+                },
                 # Cross-attention layers
                 "sg_from_comp": None,
                 "lattice_from_sg": None,
@@ -1342,7 +1367,7 @@ class HierarchicalCrystalTransformer(nn.Module):
             }
             if verbose:
                 print("Initialized KV caches for generation with KV-caching enabled")
-        
+
         while True:
             # Make sure all modules are active during generation in continuous mode
             if self.config.prediction_mode == "continuous" and hasattr(

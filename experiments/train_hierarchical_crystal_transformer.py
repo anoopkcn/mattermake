@@ -13,7 +13,7 @@ from lightning.pytorch import Trainer, seed_everything
 from lightning.pytorch.loggers import Logger
 from lightning.pytorch.callbacks import Callback
 from mattermake.utils.pylogger import get_pylogger
-from mattermake.models.hierarchical_crystal_transformer_module import (
+from mattermake.models.hct_module import (
     HierarchicalCrystalTransformerModule,
 )
 

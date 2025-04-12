@@ -1,8 +1,8 @@
 import os
 import argparse
 import torch.serialization
-from mattermake.data.crystal_tokenizer import CrystalTokenData
-from mattermake.data.crystal_sequence_datamodule import CrystalSequenceDataModule
+from mattermake.data.hct_tokenizer import CrystalTokenData
+from mattermake.data.hct_sequence_datamodule import CrystalSequenceDataModule
 
 torch.serialization.add_safe_globals([CrystalTokenData])
 

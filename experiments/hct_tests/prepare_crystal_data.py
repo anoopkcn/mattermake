@@ -6,12 +6,14 @@ import pandas as pd
 from tqdm import tqdm
 from pymatgen.core import Structure
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
-from mattermake.data.crystal_tokenizer import CrystalTokenizer
+from mattermake.data.hct_tokenizer import CrystalTokenizer
 
 from mattermake.utils.pylogger import get_pylogger
 
 # Suppress pymatgen warnings about fractional coordinates
-warnings.filterwarnings("ignore", message=".*fractional coordinates rounded to ideal values.*")
+warnings.filterwarnings(
+    "ignore", message=".*fractional coordinates rounded to ideal values.*"
+)
 
 logger = get_pylogger(__name__)
 

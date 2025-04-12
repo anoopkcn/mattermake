@@ -35,10 +35,11 @@ composition_curriculum_epochs: 5
 space_group_curriculum_epochs: 5
 lattice_curriculum_epochs: 5
 
-# Prediction mode: "discrete" or "continuous"
-prediction_mode: "continuous"
+# Always use mixture density networks for continuous values
+lattice_mixture_components: 5  # Number of components for lattice parameter MoG
+coord_mixture_components: 5    # Number of components for coordinate MoVM
 apply_wyckoff_constraints: true
 use_combined_wyckoff_tokens: true
 
-# Weighting for regression losses relative to classification losses
-continuous_regression_weight: 0.5
+# Weighting for mixture density network losses
+mixture_density_loss_weight: 0.5

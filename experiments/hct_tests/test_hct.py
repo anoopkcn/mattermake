@@ -31,7 +31,6 @@ logger.setLevel(logging.INFO)
 def load_model_from_checkpoint(
     checkpoint_path,
     vocab_size=None,
-    use_continuous=False,
     apply_wyckoff_constraints=False,
 ):
     """Load a model from checkpoint
@@ -39,7 +38,6 @@ def load_model_from_checkpoint(
     Args:
         checkpoint_path: Path to the checkpoint file
         vocab_size: Vocabulary size for the model
-        use_continuous: Whether to use continuous predictions for coordinates and lattice
         apply_wyckoff_constraints: Whether to apply Wyckoff position constraints conditioned on space group
     """
     if checkpoint_path is not None and os.path.exists(checkpoint_path):
@@ -58,13 +56,12 @@ def load_model_from_checkpoint(
             raise ValueError(
                 "vocab_size must be provided when initializing a new model"
             )
-        # Configure the model to prevent integer overflow with coordinate_embedding_dim
+        # Initialize the model with mixture density networks
         model = HierarchicalCrystalTransformerModule(
             vocab_size=vocab_size,
             coordinate_embedding_dim=4,  # Reduced from default (32) to avoid overflow
-            prediction_mode="continuous"
-            if use_continuous
-            else "discrete",  # Set prediction mode based on parameter
+            lattice_mixture_components=5,  # Number of mixture components for lattice parameters
+            coord_mixture_components=5    # Number of mixture components for coordinates
         )
 
         # Set Wyckoff constraints configuration after model initialization
@@ -98,7 +95,6 @@ def generate_structures(
     temperature=0.8,
     top_k=40,
     top_p=0.9,
-    use_continuous=True,
     verbose=False,
 ):
     """Generate crystal structures using the trained model
@@ -109,7 +105,6 @@ def generate_structures(
         temperature: Sampling temperature
         top_k: If set, sample from top k most likely tokens
         top_p: If set, sample from tokens with cumulative probability >= top_p
-        use_continuous: Whether to use continuous predictions for lattice parameters and coordinates
         verbose: Whether to print detailed debugging information during generation
 
     Returns:
@@ -119,8 +114,6 @@ def generate_structures(
 
     # Check model configuration
     if hasattr(model.model, "config"):
-        current_mode = model.model.config.prediction_mode
-        logger.info(f"Model prediction mode: {current_mode}")
         logger.info(f"Active modules: {model.model.active_modules}")
 
         # Log Wyckoff constraints status
@@ -131,11 +124,8 @@ def generate_structures(
             )
     else:
         logger.warning("Could not access model config")
-        current_mode = "unknown"
 
-    logger.info(
-        f"Using {'continuous' if use_continuous else 'discrete'} predictions for lattice and coordinates"
-    )
+    logger.info("Using mixture density networks for predictions")
     if verbose:
         logger.info("Detailed generation debugging is enabled")
 
@@ -160,20 +150,19 @@ def generate_structures(
         repetition_penalty=1.05,
     )
 
-    # Check if any continuous predictions were generated
-    if use_continuous or current_mode == "continuous":
-        has_continuous_lattice = any(
-            s.get("used_continuous_lattice", False) for s in structures
-        )
-        has_continuous_coords = any(
-            s.get("used_continuous_coords", False) for s in structures
-        )
-        logger.info(
-            f"Generated structures with continuous lattice: {has_continuous_lattice}"
-        )
-        logger.info(
-            f"Generated structures with continuous coordinates: {has_continuous_coords}"
-        )
+    # Check if mixture density predictions were properly generated
+    has_continuous_lattice = any(
+        s.get("used_continuous_lattice", False) for s in structures
+    )
+    has_continuous_coords = any(
+        s.get("used_continuous_coords", False) for s in structures
+    )
+    logger.info(
+        f"Generated structures with mixture density lattice: {has_continuous_lattice}"
+    )
+    logger.info(
+        f"Generated structures with mixture density coordinates: {has_continuous_coords}"
+    )
 
     return structures
 
@@ -190,7 +179,7 @@ def validate_structures(structures):
     valid_count = 0
     issues = []
 
-    # Track how many structures used continuous predictions
+    # Track how many structures used mixture density predictions
     continuous_lattice_count = 0
     continuous_coords_count = 0
 
@@ -205,24 +194,24 @@ def validate_structures(structures):
         logger.info(f"Composition: {structure['composition']}")
         logger.info(f"Space group: {structure['space_group']}")
 
-        # Check if continuous predictions were used
+        # Check if mixture density predictions were used
         if (
             "used_continuous_lattice" in structure
             and structure["used_continuous_lattice"]
         ):
             continuous_lattice_count += 1
-            logger.info("Used continuous lattice predictions: Yes")
+            logger.info("Used mixture density lattice predictions: Yes")
         else:
-            logger.info("Used continuous lattice predictions: No")
+            logger.info("Used mixture density lattice predictions: No")
 
         if (
             "used_continuous_coords" in structure
             and structure["used_continuous_coords"]
         ):
             continuous_coords_count += 1
-            logger.info("Used continuous coordinate predictions: Yes")
+            logger.info("Used mixture density coordinate predictions: Yes")
         else:
-            logger.info("Used continuous coordinate predictions: No")
+            logger.info("Used mixture density coordinate predictions: No")
 
         # Check if lattice parameters are present and valid
         if "lattice_params" in structure and len(structure["lattice_params"]) >= 6:
@@ -298,10 +287,10 @@ def validate_structures(structures):
 
     logger.info(f"\nValid structures: {valid_count}/{len(structures)}")
     logger.info(
-        f"Structures using continuous lattice predictions: {continuous_lattice_count}/{len(structures)}"
+        f"Structures using mixture density lattice predictions: {continuous_lattice_count}/{len(structures)}"
     )
     logger.info(
-        f"Structures using continuous coordinate predictions: {continuous_coords_count}/{len(structures)}"
+        f"Structures using mixture density coordinate predictions: {continuous_coords_count}/{len(structures)}"
     )
 
     if issues:
@@ -311,8 +300,8 @@ def validate_structures(structures):
 
     return {
         "valid_count": valid_count,
-        "continuous_lattice_count": continuous_lattice_count,
-        "continuous_coords_count": continuous_coords_count,
+        "mixture_density_lattice_count": continuous_lattice_count,
+        "mixture_density_coords_count": continuous_coords_count,
         "structures_with_wyckoff": structures_with_wyckoff,
         "wyckoff_positions_count": wyckoff_positions_count,
     }
@@ -339,11 +328,7 @@ def main():
     parser.add_argument(
         "--temperature", type=float, default=0.8, help="Sampling temperature"
     )
-    parser.add_argument(
-        "--continuous",
-        action="store_true",
-        help="Use continuous predictions for lattice and coordinates (default: disabled)",
-    )
+    # Note: Removed --continuous flag as mixture density networks are always used
     parser.add_argument(
         "--limit_structures",
         type=int,
@@ -403,19 +388,12 @@ def main():
     model = load_model_from_checkpoint(
         args.checkpoint,
         vocab_size=vocab_size,
-        use_continuous=args.continuous,
         apply_wyckoff_constraints=args.apply_wyckoff_constraints,
     )
 
     # Force configuration to match the arguments
     # This is needed because loaded checkpoint might have been trained with different settings
     if hasattr(model.model, "config"):
-        logger.info(
-            f"Setting model prediction mode to: {'continuous' if args.continuous else 'discrete'}"
-        )
-        model.model.config.prediction_mode = (
-            "continuous" if args.continuous else "discrete"
-        )
 
         # Set Wyckoff constraints configuration
         logger.info(
@@ -449,7 +427,6 @@ def main():
         temperature=args.temperature,
         top_k=40,  # Default value
         top_p=0.9,  # Default value
-        use_continuous=args.continuous,
         verbose=args.verbose,  # Use verbose flag for detailed debugging
     )
 
@@ -460,10 +437,10 @@ def main():
     logger.info("\nValidation Summary:")
     logger.info(f"Valid structures: {validation_results['valid_count']}")
     logger.info(
-        f"With continuous lattice: {validation_results['continuous_lattice_count']}"
+        f"With mixture density lattice: {validation_results['mixture_density_lattice_count']}"
     )
     logger.info(
-        f"With continuous coordinates: {validation_results['continuous_coords_count']}"
+        f"With mixture density coordinates: {validation_results['mixture_density_coords_count']}"
     )
     logger.info(
         f"Structures with Wyckoff positions: {validation_results['structures_with_wyckoff']}/{args.num_structures}"
@@ -483,6 +460,5 @@ if __name__ == "__main__":
     #     --limit_structures 1000 \
     #     --num_structures 5 \
     #     --temperature 0.8 \
-    #     --continuous \
     #     --batch_size 16 \
     #     --gpu

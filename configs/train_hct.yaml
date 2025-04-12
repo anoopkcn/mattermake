@@ -18,8 +18,8 @@ task_name: "train_hct"
 # tags to help you identify your experiments
 tags: ["crystal-transformer", "materials-generation"]
 
-# Weight for continuous regression losses relative to classification losses
-continuous_regression_weight: 0.5
+# Weight for mixture density network losses relative to classification losses
+mixture_density_loss_weight: 0.5
 
 # debugging
 debug: False

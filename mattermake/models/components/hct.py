@@ -52,8 +52,9 @@ class HierarchicalCrystalTransformerConfig:
     lattice_loss_weight: float = 1.0
     atom_loss_weight: float = 0.8
 
-    # Mode for predictions: "discrete" or "continuous"
-    prediction_mode: str = "discrete"
+    # Mixture Density Network parameters
+    lattice_mixture_components: int = 5  # Number of components for lattice parameter MoG
+    coord_mixture_components: int = 5  # Number of components for coordinate MoVM
 
     # Whether to apply Wyckoff position constraints
     apply_wyckoff_constraints: bool = False
@@ -431,9 +432,8 @@ class HierarchicalCrystalTransformer(nn.Module):
 
         self.space_group_head = nn.Linear(config.hidden_size, 230)  # 230 space groups
 
-        self.lattice_param_head = nn.Linear(
-            config.hidden_size, 6
-        )  # 6 lattice parameters
+        # We don't use discrete lattice parameters, so no need for this head
+        self.lattice_param_head = None
         self.wyckoff_head = nn.Linear(
             config.hidden_size, 26
         )  # 26 Wyckoff letters (a-z)
@@ -450,34 +450,30 @@ class HierarchicalCrystalTransformer(nn.Module):
             config.hidden_size, 95
         )  # ~95 elements commonly found in crystals
 
-        # Create discrete coordinate head only in discrete prediction mode
-        if config.prediction_mode == "discrete":
-            self.coordinate_head = nn.Linear(
-                config.hidden_size, 10**config.coordinate_embedding_dim
-            )  # For fractional coordinates
-        else:
-            # In continuous mode, don't create the large coordinate head to save memory
-            self.coordinate_head = None
+        # No discrete coordinate head - always use continuous prediction
+        self.coordinate_head = None
 
-        self.lattice_length_head = nn.Sequential(
-            nn.Linear(config.hidden_size, config.hidden_size // 2),
-            nn.SiLU(),
-            nn.Linear(config.hidden_size // 2, 3),  # 3 lengths: a, b, c
+        # Always use mixture density networks for continuous prediction
+        from .mixture_density import MixtureOfGaussiansHead, MixtureOfWrappedNormalsHead
+        
+        # Mixture of Gaussians for lattice parameters
+        self.lattice_mog_head = MixtureOfGaussiansHead(
+            hidden_size=config.hidden_size,
+            output_dim=6,  # 3 lengths + 3 angles
+            n_mixtures=config.lattice_mixture_components
         )
-
-        # Lattice angle parameters (alpha, beta, gamma) typically 30-150 degrees
-        self.lattice_angle_head = nn.Sequential(
-            nn.Linear(config.hidden_size, config.hidden_size // 2),
-            nn.SiLU(),
-            nn.Linear(config.hidden_size // 2, 3),  # 3 angles: alpha, beta, gamma
+        
+        # Mixture of wrapped normals for fractional coordinates
+        self.fractional_coord_movm_head = MixtureOfWrappedNormalsHead(
+            hidden_size=config.hidden_size,
+            output_dim=3,  # x, y, z coordinates
+            n_mixtures=config.coord_mixture_components
         )
-
-        # Fractional coordinates (x, y, z) between 0 and 1
-        self.fractional_coord_head = nn.Sequential(
-            nn.Linear(config.hidden_size, config.hidden_size // 2),
-            nn.SiLU(),
-            nn.Linear(config.hidden_size // 2, 3),  # 3 coordinates: x, y, z
-        )
+        
+        # No standard regression heads - only using mixture density networks
+        self.lattice_length_head = None
+        self.lattice_angle_head = None
+        self.fractional_coord_head = None
 
         self.active_modules = ["composition", "space_group", "lattice", "atoms"]
 
@@ -917,55 +913,29 @@ class HierarchicalCrystalTransformer(nn.Module):
                 if torch.any(lattice_mask):
                     lattice_hidden = hidden_states[lattice_mask]
                     if lattice_hidden.size(0) > 0:
-                        # Discrete approach
-                        lattice_logits = self.lattice_param_head(lattice_hidden)
-                        outputs["lattice_logits"] = lattice_logits
-
-                        # Continuous approach
-                        raw_lattice_lengths = self.lattice_length_head(lattice_hidden)
-                        raw_lattice_angles = self.lattice_angle_head(lattice_hidden)
-
-                        lattice_lengths = bound_lattice_lengths(raw_lattice_lengths)
-                        lattice_angles = bound_lattice_angles(raw_lattice_angles)
+                        # Always use Mixture of Gaussians (MoG) for lattice predictions
+                        lattice_mog_params = self.lattice_mog_head(lattice_hidden)
+                        outputs["lattice_mog_params"] = lattice_mog_params
+                        
+                        # Extract predicted means for compatibility
+                        # These will be used as the "best guess" values when needed
+                        weights_probs = F.softmax(lattice_mog_params["weights_logits"], dim=-1)
+                        
+                        # Calculate weighted means for each parameter
+                        # Shape: [batch_size, 6]
+                        weighted_means = torch.sum(
+                            weights_probs.unsqueeze(-2) * lattice_mog_params["means"],
+                            dim=-1
+                        )
+                        
+                        # Split into lengths and angles for compatibility
+                        lattice_lengths = bound_lattice_lengths(weighted_means[:, :3])
+                        lattice_angles = bound_lattice_angles(weighted_means[:, 3:])
 
                         outputs["lattice_lengths"] = lattice_lengths
                         outputs["lattice_angles"] = lattice_angles
 
-                        if labels is not None:
-                            lat_labels_mask = (
-                                safe_segment_ids == self.config.SEGMENT_LATTICE
-                            )
-
-                            if torch.any(lat_labels_mask):
-                                lattice_labels = labels[lat_labels_mask]
-
-                                valid_labels = (lattice_labels >= 0) & (
-                                    lattice_labels
-                                    < self.lattice_param_head.out_features
-                                ) | (lattice_labels == -100)
-                                if not torch.all(valid_labels):
-                                    lattice_labels = torch.where(
-                                        valid_labels,
-                                        lattice_labels,
-                                        torch.tensor(
-                                            -100, device=lattice_labels.device
-                                        ),
-                                    )
-
-                                if lattice_logits.size(0) == lattice_labels.size(0):
-                                    try:
-                                        lattice_loss = F.cross_entropy(
-                                            lattice_logits,
-                                            lattice_labels,
-                                            ignore_index=-100,
-                                        )
-                                        outputs["lattice_loss"] = (
-                                            lattice_loss  # Store discrete loss
-                                        )
-                                    except Exception as e:
-                                        print(
-                                            f"Warning: Failed to calculate lattice loss: {e}"
-                                        )
+                        # No discrete loss calculation for lattice parameters
 
                         # --- LATTICE REGRESSION LOSS ---
                         # Check if we are training AND have ground truth
@@ -976,23 +946,22 @@ class HierarchicalCrystalTransformer(nn.Module):
                         ):
                             gt_lengths = self._lattice_ground_truth["lengths"]
                             gt_angles = self._lattice_ground_truth["angles"]
-
-                            # Add shape check for safety
-                            if (
-                                lattice_lengths.shape == gt_lengths.shape
-                                and lattice_angles.shape == gt_angles.shape
-                            ):
-                                length_loss = F.mse_loss(lattice_lengths, gt_lengths)
-                                angle_loss = F.mse_loss(lattice_angles, gt_angles)
-                                lattice_regression_loss = length_loss + angle_loss
-                                outputs["lattice_regression_loss"] = (
-                                    lattice_regression_loss
-                                )
-                            else:
-                                print(
-                                    f"Warning: Shape mismatch for lattice regression loss. Pred: {lattice_lengths.shape}, {lattice_angles.shape}. GT: {gt_lengths.shape}, {gt_angles.shape}"
-                                )
-                                # Optionally set loss to 0 or skip adding it to outputs
+                            
+                            # Combine lengths and angles for full lattice parameters
+                            # Shape: [batch_size, 6]
+                            gt_lattice_params = torch.cat([gt_lengths, gt_angles], dim=-1)
+                            
+                            # Always use negative log-likelihood loss with mixture of Gaussians
+                            try:
+                                # Get distribution from parameters
+                                mog_dist = self.lattice_mog_head.get_distribution(outputs["lattice_mog_params"])
+                                
+                                # Calculate negative log-likelihood
+                                log_prob = mog_dist.log_prob(gt_lattice_params)
+                                lattice_regression_loss = -log_prob.mean()
+                                outputs["lattice_regression_loss"] = lattice_regression_loss
+                            except Exception as e:
+                                print(f"Warning: Failed to calculate lattice MoG loss: {e}")
 
             if "atoms" in self.active_modules:
                 element_mask = safe_segment_ids == self.config.SEGMENT_ELEMENT
@@ -1185,56 +1154,7 @@ class HierarchicalCrystalTransformer(nn.Module):
                             0
                         )  # This is incorrect, this is num_coord_tokens, not batch_size
 
-                        # Handle coordinate predictions based on prediction mode
-                        if (
-                            self.config.prediction_mode == "discrete"
-                            and hasattr(self, "coordinate_head")
-                            and self.coordinate_head is not None
-                        ):
-                            try:
-                                coordinate_logits = self.coordinate_head(
-                                    coordinate_hidden
-                                )
-                                outputs["coordinate_logits"] = coordinate_logits
-
-                                if labels is not None:
-                                    coordinate_labels = labels[coordinate_mask]
-
-                                    valid_labels = (coordinate_labels >= 0) & (
-                                        coordinate_labels
-                                        < self.coordinate_head.out_features
-                                    ) | (coordinate_labels == -100)
-                                    if not torch.all(valid_labels):
-                                        coordinate_labels = torch.where(
-                                            valid_labels,
-                                            coordinate_labels,
-                                            torch.tensor(
-                                                -100, device=coordinate_labels.device
-                                            ),
-                                        )
-
-                                    if coordinate_logits.size(
-                                        0
-                                    ) == coordinate_labels.size(0):
-                                        try:
-                                            coordinate_loss = F.cross_entropy(
-                                                coordinate_logits,
-                                                coordinate_labels,
-                                                ignore_index=-100,
-                                            )
-                                            outputs["coordinate_loss"] = coordinate_loss
-                                        except Exception as e:
-                                            print(
-                                                f"Warning: Failed to calculate coordinate loss: {e}"
-                                            )
-                                    else:
-                                        print(
-                                            f"Warning: Coordinate logits and labels size mismatch: {coordinate_logits.size(0)} vs {coordinate_labels.size(0)}"
-                                        )
-                            except Exception as e:
-                                print(
-                                    f"Warning: Failed to compute coordinate logits: {e}"
-                                )
+                        # Coordinate predictions are always continuous
 
                     # --- COORDINATE REGRESSION LOSS ---
                     try:
@@ -1255,15 +1175,26 @@ class HierarchicalCrystalTransformer(nn.Module):
                                 # Make sure the slice index is valid
                                 slice_end = num_atoms * 3
                                 if slice_end <= coordinate_hidden.size(0):
-                                    # Apply head only to relevant hidden states
-                                    raw_coords = self.fractional_coord_head(
-                                        coordinate_hidden[
-                                            :slice_end:3
-                                        ]  # Original logic
+                                    # Always use MoVM for coordinate predictions
+                                    coord_movm_params = self.fractional_coord_movm_head(
+                                        coordinate_hidden[:slice_end:3]  # Get hidden state for each atom
                                     )
-                                    fractional_coords = bound_fractional_coords(
-                                        raw_coords
+                                    outputs["coord_movm_params"] = coord_movm_params
+                                    
+                                    # Calculate weighted means as "best guess" values for compatibility
+                                    weights_probs = F.softmax(coord_movm_params["weights_logits"], dim=-1)
+                                    
+                                    # Calculate weighted means for each coordinate
+                                    # Shape: [num_atoms, 3]
+                                    weighted_means = torch.sum(
+                                        weights_probs.unsqueeze(-2) * coord_movm_params["means"],
+                                        dim=-1
                                     )
+                                    
+                                    # Bound coordinates to [0, 1)
+                                    from .mixture_density import bound_mixture_fractional_coords
+                                    fractional_coords = bound_mixture_fractional_coords(weighted_means)
+                                        
                                     outputs["fractional_coords"] = fractional_coords
 
                                     # Check if we are training AND have ground truth
@@ -1276,23 +1207,18 @@ class HierarchicalCrystalTransformer(nn.Module):
                                             gt_coords = self._coordinate_ground_truth[
                                                 "fractional_coords"
                                             ]
-
-                                            # Check shapes before calculating loss
-                                            if (
-                                                fractional_coords.shape
-                                                == gt_coords.shape
-                                            ):
-                                                coord_regression_loss = F.mse_loss(
-                                                    fractional_coords, gt_coords
-                                                )
-                                                outputs["coord_regression_loss"] = (
-                                                    coord_regression_loss
-                                                )
-                                            else:
-                                                print(
-                                                    f"Warning: Coordinate shape mismatch: Pred {fractional_coords.shape} vs GT {gt_coords.shape}"
-                                                )
-                                                # Optionally set loss to 0 or skip adding it
+                                            
+                                            # Always use negative log-likelihood loss with mixture of wrapped normals
+                                            try:
+                                                # Get distribution from parameters
+                                                movm_dist = self.fractional_coord_movm_head.get_distribution(outputs["coord_movm_params"])
+                                                
+                                                # Calculate negative log-likelihood
+                                                log_prob = movm_dist.log_prob(gt_coords)
+                                                coord_regression_loss = -log_prob.mean()
+                                                outputs["coord_regression_loss"] = coord_regression_loss
+                                            except Exception as e:
+                                                print(f"Warning: Failed to calculate coordinate MoVM loss: {e}")
 
                                         except Exception as e:
                                             print(
@@ -1316,9 +1242,9 @@ class HierarchicalCrystalTransformer(nn.Module):
                 if torch.any(atom_mask):
                     outputs["atom_hidden_states"] = hidden_states[atom_mask]
 
-        # For generation in continuous mode, ensure lattice and coordinate predictions are included
+        # For generation, ensure lattice and coordinate predictions are included
         # even if the right segments weren't encountered during this forward pass
-        if not self.training and self.config.prediction_mode == "continuous":
+        if not self.training:
             # Check if continuous predictions are missing and we need to add them
             if (
                 "lattice" in self.active_modules
@@ -1333,12 +1259,18 @@ class HierarchicalCrystalTransformer(nn.Module):
                     # Use the last token's hidden state for prediction
                     last_hidden = hidden_states[:, -1]
 
-                    # Generate lattice predictions
-                    raw_lattice_lengths = self.lattice_length_head(last_hidden)
-                    raw_lattice_angles = self.lattice_angle_head(last_hidden)
-
-                    lattice_lengths = bound_lattice_lengths(raw_lattice_lengths)
-                    lattice_angles = bound_lattice_angles(raw_lattice_angles)
+                    # Generate lattice predictions using Mixture of Gaussians
+                    # Generate parameters for mixture of Gaussians
+                    lattice_mog_params = self.lattice_mog_head(last_hidden)
+                    outputs["lattice_mog_params"] = lattice_mog_params
+                    
+                    # Get distribution and sample from it
+                    mog_dist = self.lattice_mog_head.get_distribution(lattice_mog_params)
+                    lattice_samples = mog_dist.sample()
+                    
+                    # Split samples into lengths and angles for compatibility
+                    lattice_lengths = bound_lattice_lengths(lattice_samples[:, :3])
+                    lattice_angles = bound_lattice_angles(lattice_samples[:, 3:])
 
                     outputs["lattice_lengths"] = lattice_lengths
                     outputs["lattice_angles"] = lattice_angles
@@ -1351,9 +1283,19 @@ class HierarchicalCrystalTransformer(nn.Module):
                     # Use the last token's hidden state
                     last_hidden = hidden_states[:, -1].unsqueeze(0)
 
-                    # Generate coordinate predictions (simplified)
-                    raw_coords = self.fractional_coord_head(last_hidden)
-                    fractional_coords = bound_fractional_coords(raw_coords)
+                    # Generate coordinate predictions using Mixture of Wrapped Normals
+                    # Generate parameters for mixture of wrapped normals
+                    coord_movm_params = self.fractional_coord_movm_head(last_hidden)
+                    outputs["coord_movm_params"] = coord_movm_params
+                    
+                    # Get distribution and sample from it
+                    movm_dist = self.fractional_coord_movm_head.get_distribution(coord_movm_params)
+                    coord_samples = movm_dist.sample()
+                    
+                    # Ensure coordinates are in [0, 1) range
+                    from .mixture_density import bound_mixture_fractional_coords
+                    fractional_coords = bound_mixture_fractional_coords(coord_samples)
+                        
                     outputs["fractional_coords"] = fractional_coords
 
         return outputs
@@ -1390,7 +1332,7 @@ class HierarchicalCrystalTransformer(nn.Module):
             print(
                 f"Starting generation with temperature={temperature}, top_k={top_k}, top_p={top_p}"
             )
-            print(f"Using prediction mode: {self.config.prediction_mode}")
+            print("Using mixture density networks for predictions")
             print(f"Initial tokens shape: {input_ids.shape}")
             idx_to_token = (
                 constraints.get("token_id_maps", {}).get("idx_to_token", {})
@@ -1398,14 +1340,10 @@ class HierarchicalCrystalTransformer(nn.Module):
                 else {}
             )
 
-        continuous_predictions = (
-            {"lattice_lengths": [], "lattice_angles": [], "fractional_coords": []}
-            if self.config.prediction_mode == "continuous"
-            else None
-        )
+        # Always use continuous predictions
+        continuous_predictions = {"lattice_lengths": [], "lattice_angles": [], "fractional_coords": []}
 
         if verbose:
-            print(f"Prediction mode: {self.config.prediction_mode}")
             print(f"Active modules: {self.active_modules}")
 
         unfinished_sequences = torch.ones(batch_size, dtype=torch.bool, device=device)
@@ -1445,10 +1383,8 @@ class HierarchicalCrystalTransformer(nn.Module):
                 print("Initialized KV caches for generation with KV-caching enabled")
 
         while True:
-            # Make sure all modules are active during generation in continuous mode
-            if self.config.prediction_mode == "continuous" and hasattr(
-                self, "active_modules"
-            ):
+            # Make sure all modules are active during generation
+            if hasattr(self, "active_modules"):
                 # Store original active modules to restore later
                 original_active_modules = (
                     self.active_modules.copy() if self.active_modules else []
@@ -1471,42 +1407,40 @@ class HierarchicalCrystalTransformer(nn.Module):
             )
 
             # Restore original active modules
-            if self.config.prediction_mode == "continuous" and hasattr(
-                self, "active_modules"
-            ):
+            if hasattr(self, "active_modules"):
                 self.active_modules = original_active_modules
                 if verbose:
                     print(f"Restored active_modules: {self.active_modules}")
 
-            if self.config.prediction_mode == "continuous":
-                if "lattice_lengths" in outputs and "lattice_angles" in outputs:
-                    if verbose:
-                        print(
-                            f"Found lattice predictions: lengths={outputs['lattice_lengths'].shape}, angles={outputs['lattice_angles'].shape}"
-                        )
-                    continuous_predictions["lattice_lengths"].append(
-                        outputs["lattice_lengths"]
-                    )
-                    continuous_predictions["lattice_angles"].append(
-                        outputs["lattice_angles"]
-                    )
-                elif verbose and self.config.prediction_mode == "continuous":
+            # Always collect continuous predictions
+            if "lattice_lengths" in outputs and "lattice_angles" in outputs:
+                if verbose:
                     print(
-                        f"Missing lattice predictions in output keys: {list(outputs.keys())}"
+                        f"Found lattice predictions: lengths={outputs['lattice_lengths'].shape}, angles={outputs['lattice_angles'].shape}"
                     )
+                continuous_predictions["lattice_lengths"].append(
+                    outputs["lattice_lengths"]
+                )
+                continuous_predictions["lattice_angles"].append(
+                    outputs["lattice_angles"]
+                )
+            elif verbose:
+                print(
+                    f"Missing lattice predictions in output keys: {list(outputs.keys())}"
+                )
 
-                if "fractional_coords" in outputs:
-                    if verbose:
-                        print(
-                            f"Found coordinate predictions: coords={outputs['fractional_coords'].shape}"
-                        )
-                    continuous_predictions["fractional_coords"].append(
-                        outputs["fractional_coords"]
-                    )
-                elif verbose and self.config.prediction_mode == "continuous":
+            if "fractional_coords" in outputs:
+                if verbose:
                     print(
-                        f"Missing coordinate predictions in output keys: {list(outputs.keys())}"
+                        f"Found coordinate predictions: coords={outputs['fractional_coords'].shape}"
                     )
+                continuous_predictions["fractional_coords"].append(
+                    outputs["fractional_coords"]
+                )
+            elif verbose:
+                print(
+                    f"Missing coordinate predictions in output keys: {list(outputs.keys())}"
+                )
 
             next_token_logits = outputs["logits"][:, -1, :]
 
@@ -1655,7 +1589,8 @@ class HierarchicalCrystalTransformer(nn.Module):
         has_continuous_lattice = False
         has_continuous_coords = False
 
-        if self.config.prediction_mode == "continuous" and continuous_predictions:
+        # Process continuous predictions
+        if continuous_predictions:
             if verbose:
                 print("Processing continuous predictions")
                 print(

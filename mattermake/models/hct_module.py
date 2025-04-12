@@ -36,9 +36,10 @@ class HierarchicalCrystalTransformerModule(LightningModule):
         lattice_layers: int = 3,
         atom_layers: int = 6,
         integration_layers: int = 2,
-        coordinate_embedding_dim: int = 32,  # Added parameter for coordinate embedding dimension
-        prediction_mode: str = "discrete",  # Mode for predictions: "discrete" or "continuous"
-        continuous_regression_weight: float = 0.5,  # Weight for continuous regression losses
+        coordinate_embedding_dim: int = 32,  # Parameter for coordinate embedding dimension
+        mixture_density_loss_weight: float = 0.5,  # Weight for mixture density network losses
+        lattice_mixture_components: int = 5,  # Number of components for lattice parameter MoG
+        coord_mixture_components: int = 5,  # Number of components for coordinate MoVM
         apply_wyckoff_constraints: bool = False,  # Whether to apply Wyckoff position constraints
         use_combined_wyckoff_tokens: bool = True,  # Whether to use combined Wyckoff tokens
         tokenizer_config: Optional[Dict[str, Any]] = None,
@@ -68,7 +69,8 @@ class HierarchicalCrystalTransformerModule(LightningModule):
             space_group_curriculum_epochs=space_group_curriculum_epochs,
             lattice_curriculum_epochs=lattice_curriculum_epochs,
             coordinate_embedding_dim=coordinate_embedding_dim,
-            prediction_mode=prediction_mode,
+            lattice_mixture_components=lattice_mixture_components,
+            coord_mixture_components=coord_mixture_components,
             apply_wyckoff_constraints=apply_wyckoff_constraints,
             use_combined_wyckoff_tokens=use_combined_wyckoff_tokens,
         )
@@ -791,26 +793,26 @@ class HierarchicalCrystalTransformerModule(LightningModule):
             seq = outputs["sequences"][i].cpu().tolist()
             segments = outputs["segment_ids"][i].cpu().tolist()
 
-            # Get continuous predictions if available
+            # Get continuous predictions
             continuous_data = {}
-            if self.model.config.prediction_mode == "continuous":
-                # Extract continuous lattice parameters if available
-                if (
-                    "continuous_lattice_lengths" in outputs
-                    and "continuous_lattice_angles" in outputs
-                ):
-                    # Get the values for this sequence
-                    lengths = outputs["continuous_lattice_lengths"][i].cpu()
-                    angles = outputs["continuous_lattice_angles"][i].cpu()
-                    continuous_data["lattice_params"] = {
-                        "lengths": lengths,
-                        "angles": angles,
-                    }
+            # Always use continuous predictions
+            # Extract continuous lattice parameters if available
+            if (
+                "continuous_lattice_lengths" in outputs
+                and "continuous_lattice_angles" in outputs
+            ):
+                # Get the values for this sequence
+                lengths = outputs["continuous_lattice_lengths"][i].cpu()
+                angles = outputs["continuous_lattice_angles"][i].cpu()
+                continuous_data["lattice_params"] = {
+                    "lengths": lengths,
+                    "angles": angles,
+                }
 
-                # Extract continuous fractional coordinates if available
-                if "continuous_fractional_coords" in outputs:
-                    coords = outputs["continuous_fractional_coords"][i].cpu()
-                    continuous_data["fractional_coords"] = coords
+            # Extract continuous fractional coordinates if available
+            if "continuous_fractional_coords" in outputs:
+                coords = outputs["continuous_fractional_coords"][i].cpu()
+                continuous_data["fractional_coords"] = coords
 
             # Decode to structure (using a helper function, implementation depends on tokenizer)
             if hasattr(self, "decode_to_structure"):

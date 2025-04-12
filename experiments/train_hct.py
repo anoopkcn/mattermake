@@ -74,37 +74,36 @@ def train(config: DictConfig) -> Optional[float]:
         log.info(f"Instantiating new model <{config.model._target_}>")
         model = hydra.utils.instantiate(config.model)
 
-    # Configure ground truth hook for continuous regression losses
-    if config.model.prediction_mode == "continuous":
-        log.info("Setting up continuous regression loss hooks for continuous mode")
+    # Configure ground truth hook for mixture density networks
+    log.info("Setting up regression loss hooks for mixture density networks")
 
-        # Set ground truth values from batch data during training
-        def prepare_ground_truth_hook(pl_module, batch):
-            # This hook extracts ground truth values from the batch data
-            # and sets them in the model for regression loss calculation
+    # Set ground truth values from batch data during training
+    def prepare_ground_truth_hook(pl_module, batch):
+        # This hook extracts ground truth values from the batch data
+        # and sets them in the model for regression loss calculation
 
-            # Handle the case where pl_module might be a dict (happens in some distributed training scenarios)
-            if isinstance(pl_module, dict):
-                # This is normal in distributed training, so no need to log a warning
-                return
+        # Handle the case where pl_module might be a dict (happens in some distributed training scenarios)
+        if isinstance(pl_module, dict):
+            # This is normal in distributed training, so no need to log a warning
+            return
 
-            # Make sure pl_module has a model attribute
-            if not hasattr(pl_module, "model"):
-                log.warning("pl_module does not have a model attribute")
-                return
+        # Make sure pl_module has a model attribute
+        if not hasattr(pl_module, "model"):
+            log.warning("pl_module does not have a model attribute")
+            return
 
-            # Now we can safely access the model
-            if hasattr(pl_module.model, "set_ground_truth_values"):
-                # Extract lattice parameters and coordinates from the batch
-                # This requires adapting your dataloader to provide this information
-                if "ground_truth_lattice" in batch:
-                    pl_module.model.set_ground_truth_values(
-                        lattice_params=batch["ground_truth_lattice"],
-                        fractional_coords=batch.get("ground_truth_coords"),
-                    )
+        # Now we can safely access the model
+        if hasattr(pl_module.model, "set_ground_truth_values"):
+            # Extract lattice parameters and coordinates from the batch
+            # This requires adapting your dataloader to provide this information
+            if "ground_truth_lattice" in batch:
+                pl_module.model.set_ground_truth_values(
+                    lattice_params=batch["ground_truth_lattice"],
+                    fractional_coords=batch.get("ground_truth_coords"),
+                )
 
-        # Register the hook with the model
-        model.on_train_batch_start = prepare_ground_truth_hook
+    # Register the hook with the model
+    model.on_train_batch_start = prepare_ground_truth_hook
 
     log.info(f"Instantiating trainer <{config.trainer._target_}>")
     trainer: Trainer = hydra.utils.instantiate(

@@ -20,7 +20,7 @@ srun --gres=gpu:4 --nodes=${SLURM_JOB_NUM_NODES} --ntasks-per-node=4 --cpu-bind=
     source /p/project1/hai_solaihack/chandran1/mattermake/.venv/bin/activate
     cd /p/home/jusers/chandran1/jureca/hai_solaihack/mattermake/experiments
 
-    python train_crystal_transformer.py \
+    python train_hierarchical_crystal_transformer.py \
         trainer.max_epochs=50 \
         trainer.num_nodes=$SLURM_JOB_NUM_NODES \
         trainer.devices=4 \

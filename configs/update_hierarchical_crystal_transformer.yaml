@@ -1,0 +1,29 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - train_hierarchical_crystal_transformer
+  - override /model: hierarchical_crystal_transformer
+
+# Enable model updating with KV-caching
+update_existing: true
+
+# Path to your checkpoint (set this via command line or environment variable)
+ckpt_path: "/p/home/jusers/chandran1/jureca/hai_solaihack/mattermake/logs/train_crystal_transformer/runs/2025-04-10_23-10-30/checkpoints/last.ckpt"
+
+# Minimal training configuration
+update_epochs: 1
+update_batches: 5
+
+# Enable KV-caching for evaluation
+use_kv_cache_for_evaluation: true
+
+# Test with the updated model
+train: true
+test: true
+
+# Performance tracking
+tags: ["kv-caching", "model-update"]
+
+# Optional: Use specific checkpoint for testing
+test_ckpt_path: "last"  # Options: "best", "last", or specific path

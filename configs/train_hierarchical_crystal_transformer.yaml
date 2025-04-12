@@ -3,7 +3,7 @@
 defaults:
   - _self_
   - data: crystal_sequence.yaml
-  - model:  continuous_crystal_transformer.yaml
+  - model:  hierarchical_crystal_transformer.yaml
   - callbacks: default.yaml
   - logger: wandb.yaml
   - trainer: default.yaml

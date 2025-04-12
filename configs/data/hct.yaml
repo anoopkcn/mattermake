@@ -1,7 +1,7 @@
 _target_: mattermake.data.hct_sequence_datamodule.CrystalSequenceDataModule
 
-data_dir: ${paths.data_dir}/hct_tokens_50k
-processed_data_file: "processed_crystal_data.pt"
+data_dir: ${paths.data_dir}/hct_data
+processed_data_file: "hct_data.pt"
 batch_size: 16
 num_workers: 4
 pin_memory: true

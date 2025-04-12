@@ -21,8 +21,8 @@ class CrystalSequenceDataModule(LightningDataModule):
 
     def __init__(
         self,
-        data_dir: str = "structure_tokens",
-        processed_data_file: str = "processed_crystal_data.pt",
+        data_dir: str = "hct_data",
+        processed_data_file: str = "hct_data.pt",
         batch_size: int = 32,
         num_workers: int = 4,
         pin_memory: bool = True,

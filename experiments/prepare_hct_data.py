@@ -72,9 +72,9 @@ def main():
         coordinate_precision=args.coord_precision,
         # Enable combined Wyckoff-multiplicity tokens
     )
-    
+
     # Make sure the tokenizer's combined Wyckoff-multiplicity feature is enabled
-    if hasattr(tokenizer, 'use_combined_wyckoff_tokens'):
+    if hasattr(tokenizer, "use_combined_wyckoff_tokens"):
         tokenizer.use_combined_wyckoff_tokens = True
 
     logger.info(f"Loading CSV file: {args.input_csv}")
@@ -138,7 +138,7 @@ def main():
         f"Split data into {len(train_data)} training and {len(val_data)} validation structures"
     )
 
-    save_path = os.path.join(args.output_dir, "processed_crystal_data.pt")
+    save_path = os.path.join(args.output_dir, "hct_data.pt")
     logger.info(f"Saving processed data to {save_path}")
 
     torch.save(

@@ -78,6 +78,16 @@ class HierarchicalCrystalTransformerModule(LightningModule):
 
         # Track current epoch for curriculum learning
         self.current_curriculum_epoch = 0
+        
+    def on_save_checkpoint(self, checkpoint):
+        """Save tokenizer config with checkpoint"""
+        if self.tokenizer_config:
+            checkpoint['tokenizer_config'] = self.tokenizer_config
+            
+    def on_load_checkpoint(self, checkpoint):
+        """Load tokenizer config from checkpoint"""
+        if 'tokenizer_config' in checkpoint:
+            self.tokenizer_config = checkpoint['tokenizer_config']
 
     def forward(self, batch):
         """Forward pass"""

@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union, Tuple
 import math
 import torch
 import torch.nn as nn
@@ -65,7 +65,7 @@ class HierarchicalCrystalTransformerConfig:
 
 
 class MultiHeadAttention(nn.Module):
-    """Multi-head attention module with causal masking option"""
+    """Multi-head attention module with causal masking option and KV-caching support"""
 
     def __init__(self, config):
         super().__init__()
@@ -92,27 +92,66 @@ class MultiHeadAttention(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         causal_mask: bool = False,
         key_value_states: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+        kv_cache: Optional[Dict[str, torch.Tensor]] = None,
+        use_kv_cache: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         batch_size, seq_len, _ = hidden_states.shape
-
-        if key_value_states is not None:
-            k = self.k_proj(key_value_states)
-            v = self.v_proj(key_value_states)
-            kv_seq_len = key_value_states.shape[1]
-        else:
-            k = self.k_proj(hidden_states)
-            v = self.v_proj(hidden_states)
-            kv_seq_len = seq_len
-
+        
+        # Initialize new cache or use existing one
+        new_cache = None
+        cached_k, cached_v = None, None
+        
+        # Check if we have a valid KV cache to use
+        if use_kv_cache and kv_cache is not None:
+            if 'k' in kv_cache and 'v' in kv_cache:
+                cached_k = kv_cache['k']
+                cached_v = kv_cache['v']
+        
+        # Process query vectors for all tokens
         q = self.q_proj(hidden_states)
-
+        
+        # With KV caching, only process key and value for the new token
+        if use_kv_cache and cached_k is not None and cached_v is not None:
+            # Only compute k, v for the last token
+            if key_value_states is not None:
+                new_k = self.k_proj(key_value_states[:, -1:, :])
+                new_v = self.v_proj(key_value_states[:, -1:, :])
+            else:
+                new_k = self.k_proj(hidden_states[:, -1:, :])
+                new_v = self.v_proj(hidden_states[:, -1:, :])
+                
+            # Reshape new keys and values
+            new_k = new_k.view(batch_size, 1, self.num_heads, self.head_size).transpose(1, 2)
+            new_v = new_v.view(batch_size, 1, self.num_heads, self.head_size).transpose(1, 2)
+            
+            # Concatenate with cached keys and values
+            k = torch.cat([cached_k, new_k], dim=2)
+            v = torch.cat([cached_v, new_v], dim=2)
+            kv_seq_len = k.size(2)
+            
+            # Create new cache
+            new_cache = {'k': k, 'v': v}
+        else:
+            # No caching or first token, compute k, v for all tokens
+            if key_value_states is not None:
+                k = self.k_proj(key_value_states)
+                v = self.v_proj(key_value_states)
+                kv_seq_len = key_value_states.shape[1]
+            else:
+                k = self.k_proj(hidden_states)
+                v = self.v_proj(hidden_states)
+                kv_seq_len = seq_len
+            
+            # Reshape k, v
+            k = k.view(batch_size, kv_seq_len, self.num_heads, self.head_size).transpose(1, 2)
+            v = v.view(batch_size, kv_seq_len, self.num_heads, self.head_size).transpose(1, 2)
+            
+            # Create new cache
+            if use_kv_cache:
+                new_cache = {'k': k, 'v': v}
+        
+        # Reshape query
         q = q.view(batch_size, seq_len, self.num_heads, self.head_size).transpose(1, 2)
-        k = k.view(batch_size, kv_seq_len, self.num_heads, self.head_size).transpose(
-            1, 2
-        )
-        v = v.view(batch_size, kv_seq_len, self.num_heads, self.head_size).transpose(
-            1, 2
-        )
 
         attn_scores = torch.matmul(q, k.transpose(-1, -2)) / math.sqrt(self.head_size)
 
@@ -176,12 +215,15 @@ class MultiHeadAttention(nn.Module):
         )
 
         output = self.out_proj(context)
-
+        
+        # Return the output along with the updated cache if KV caching is enabled
+        if use_kv_cache and new_cache is not None:
+            return output, new_cache
         return output
 
 
 class TransformerLayer(nn.Module):
-    """Single transformer layer with self-attention and feed-forward networks"""
+    """Single transformer layer with self-attention and feed-forward networks with KV-caching support"""
 
     def __init__(self, config):
         super().__init__()
@@ -205,23 +247,43 @@ class TransformerLayer(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         causal_mask: bool = False,
         key_value_states: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        attn_output = self.attention(
-            self.norm1(hidden_states),
-            attention_mask=attention_mask,
-            causal_mask=causal_mask,
-            key_value_states=key_value_states,
-        )
+        kv_cache: Optional[Dict[str, torch.Tensor]] = None,
+        use_kv_cache: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
+        # Apply attention with optional KV-caching
+        normed_hidden_states = self.norm1(hidden_states)
+        
+        if use_kv_cache:
+            attn_output, new_cache = self.attention(
+                normed_hidden_states,
+                attention_mask=attention_mask,
+                causal_mask=causal_mask,
+                key_value_states=key_value_states,
+                kv_cache=kv_cache,
+                use_kv_cache=True,
+            )
+        else:
+            attn_output = self.attention(
+                normed_hidden_states,
+                attention_mask=attention_mask,
+                causal_mask=causal_mask,
+                key_value_states=key_value_states,
+            )
+            
         hidden_states = hidden_states + self.dropout(attn_output)
 
+        # Apply feed-forward network
         ff_output = self.ff_net(self.norm2(hidden_states))
         hidden_states = hidden_states + ff_output
-
+        
+        # Return with cache if KV-caching is enabled
+        if use_kv_cache:
+            return hidden_states, new_cache
         return hidden_states
 
 
 class CrossAttentionLayer(nn.Module):
-    """Cross-attention layer for connecting different levels in the hierarchy"""
+    """Cross-attention layer for connecting different levels in the hierarchy with KV-caching support"""
 
     def __init__(self, config):
         super().__init__()
@@ -234,13 +296,28 @@ class CrossAttentionLayer(nn.Module):
         hidden_states: torch.Tensor,
         context_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        context_output = self.cross_attention(
-            self.norm(hidden_states),
-            key_value_states=context_states,
-            attention_mask=attention_mask,
-        )
-        return hidden_states + self.dropout(context_output)
+        kv_cache: Optional[Dict[str, torch.Tensor]] = None,
+        use_kv_cache: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
+        normed_hidden_states = self.norm(hidden_states)
+        
+        if use_kv_cache:
+            context_output, new_cache = self.cross_attention(
+                normed_hidden_states,
+                key_value_states=context_states,
+                attention_mask=attention_mask,
+                kv_cache=kv_cache,
+                use_kv_cache=True,
+            )
+            output = hidden_states + self.dropout(context_output)
+            return output, new_cache
+        else:
+            context_output = self.cross_attention(
+                normed_hidden_states,
+                key_value_states=context_states,
+                attention_mask=attention_mask,
+            )
+            return hidden_states + self.dropout(context_output)
 
 
 def bound_lattice_lengths(raw_lengths):
@@ -451,6 +528,8 @@ class HierarchicalCrystalTransformer(nn.Module):
         labels: Optional[torch.Tensor] = None,
         use_causal_mask: bool = True,
         return_dict: bool = True,
+        kv_caches: Optional[Dict[str, Dict[str, torch.Tensor]]] = None,
+        use_kv_cache: bool = False,
     ) -> Dict[str, torch.Tensor]:
         batch_size, seq_length = input_ids.size()
 
@@ -483,75 +562,173 @@ class HierarchicalCrystalTransformer(nn.Module):
         hidden_states = embeddings
 
         if "composition" in self.active_modules:
-            for layer in self.composition_encoder:
-                hidden_states = layer(
-                    hidden_states,
-                    attention_mask=attention_mask,
-                    causal_mask=use_causal_mask,
-                )
+            for i, layer in enumerate(self.composition_encoder):
+                layer_cache = None if kv_caches is None else kv_caches.get(f"composition_{i}")
+                
+                if use_kv_cache and kv_caches is not None:
+                    hidden_states, new_cache = layer(
+                        hidden_states,
+                        attention_mask=attention_mask,
+                        causal_mask=use_causal_mask,
+                        kv_cache=layer_cache,
+                        use_kv_cache=True,
+                    )
+                    kv_caches[f"composition_{i}"] = new_cache
+                else:
+                    hidden_states = layer(
+                        hidden_states,
+                        attention_mask=attention_mask,
+                        causal_mask=use_causal_mask,
+                    )
 
         if "space_group" in self.active_modules:
             if self.config.use_cross_attention:
-                hidden_states = self.sg_from_comp_attention(
-                    hidden_states=hidden_states,
-                    context_states=hidden_states,
-                    attention_mask=comp_mask.unsqueeze(1).unsqueeze(2),
-                )
+                cross_attn_cache = None if kv_caches is None else kv_caches.get("sg_from_comp")
+                
+                if use_kv_cache and kv_caches is not None:
+                    hidden_states, new_cache = self.sg_from_comp_attention(
+                        hidden_states=hidden_states,
+                        context_states=hidden_states,
+                        attention_mask=comp_mask.unsqueeze(1).unsqueeze(2),
+                        kv_cache=cross_attn_cache,
+                        use_kv_cache=True,
+                    )
+                    kv_caches["sg_from_comp"] = new_cache
+                else:
+                    hidden_states = self.sg_from_comp_attention(
+                        hidden_states=hidden_states,
+                        context_states=hidden_states,
+                        attention_mask=comp_mask.unsqueeze(1).unsqueeze(2),
+                    )
 
-            for layer in self.space_group_encoder:
-                hidden_states = layer(
-                    hidden_states,
-                    attention_mask=attention_mask,
-                    causal_mask=use_causal_mask,
-                )
+            for i, layer in enumerate(self.space_group_encoder):
+                layer_cache = None if kv_caches is None else kv_caches.get(f"space_group_{i}")
+                
+                if use_kv_cache and kv_caches is not None:
+                    hidden_states, new_cache = layer(
+                        hidden_states,
+                        attention_mask=attention_mask,
+                        causal_mask=use_causal_mask,
+                        kv_cache=layer_cache,
+                        use_kv_cache=True,
+                    )
+                    kv_caches[f"space_group_{i}"] = new_cache
+                else:
+                    hidden_states = layer(
+                        hidden_states,
+                        attention_mask=attention_mask,
+                        causal_mask=use_causal_mask,
+                    )
 
         if "lattice" in self.active_modules:
             if self.config.use_cross_attention:
                 context_mask = (comp_mask | sg_mask).unsqueeze(1).unsqueeze(2)
-                hidden_states = self.lattice_from_sg_attention(
-                    hidden_states=hidden_states,
-                    context_states=hidden_states,
-                    attention_mask=context_mask,
-                )
+                cross_attn_cache = None if kv_caches is None else kv_caches.get("lattice_from_sg")
+                
+                if use_kv_cache and kv_caches is not None:
+                    hidden_states, new_cache = self.lattice_from_sg_attention(
+                        hidden_states=hidden_states,
+                        context_states=hidden_states,
+                        attention_mask=context_mask,
+                        kv_cache=cross_attn_cache,
+                        use_kv_cache=True,
+                    )
+                    kv_caches["lattice_from_sg"] = new_cache
+                else:
+                    hidden_states = self.lattice_from_sg_attention(
+                        hidden_states=hidden_states,
+                        context_states=hidden_states,
+                        attention_mask=context_mask,
+                    )
 
-            for layer in self.lattice_encoder:
-                hidden_states = layer(
-                    hidden_states,
-                    attention_mask=attention_mask,
-                    causal_mask=use_causal_mask,
-                )
+            for i, layer in enumerate(self.lattice_encoder):
+                layer_cache = None if kv_caches is None else kv_caches.get(f"lattice_{i}")
+                
+                if use_kv_cache and kv_caches is not None:
+                    hidden_states, new_cache = layer(
+                        hidden_states,
+                        attention_mask=attention_mask,
+                        causal_mask=use_causal_mask,
+                        kv_cache=layer_cache,
+                        use_kv_cache=True,
+                    )
+                    kv_caches[f"lattice_{i}"] = new_cache
+                else:
+                    hidden_states = layer(
+                        hidden_states,
+                        attention_mask=attention_mask,
+                        causal_mask=use_causal_mask,
+                    )
 
         if "atoms" in self.active_modules:
             if self.config.use_cross_attention:
                 context_mask = (
                     (comp_mask | sg_mask | lattice_mask).unsqueeze(1).unsqueeze(2)
                 )
-                hidden_states = self.atom_from_lattice_attention(
-                    hidden_states=hidden_states,
-                    context_states=hidden_states,
-                    attention_mask=context_mask,
-                )
+                cross_attn_cache = None if kv_caches is None else kv_caches.get("atom_from_lattice")
+                
+                if use_kv_cache and kv_caches is not None:
+                    hidden_states, new_cache = self.atom_from_lattice_attention(
+                        hidden_states=hidden_states,
+                        context_states=hidden_states,
+                        attention_mask=context_mask,
+                        kv_cache=cross_attn_cache,
+                        use_kv_cache=True,
+                    )
+                    kv_caches["atom_from_lattice"] = new_cache
+                else:
+                    hidden_states = self.atom_from_lattice_attention(
+                        hidden_states=hidden_states,
+                        context_states=hidden_states,
+                        attention_mask=context_mask,
+                    )
 
             atom_attention_mask = attention_mask.clone()
             if self.training:
                 atom_emphasis = 1.0 + 0.2 * atom_mask.float()
                 atom_attention_mask = atom_attention_mask * atom_emphasis.unsqueeze(1)
 
-            for layer in self.atom_encoder:
+            for i, layer in enumerate(self.atom_encoder):
+                layer_cache = None if kv_caches is None else kv_caches.get(f"atom_{i}")
+                
+                if use_kv_cache and kv_caches is not None:
+                    hidden_states, new_cache = layer(
+                        hidden_states,
+                        attention_mask=atom_attention_mask
+                        if self.training
+                        else attention_mask,
+                        causal_mask=use_causal_mask,
+                        kv_cache=layer_cache,
+                        use_kv_cache=True,
+                    )
+                    kv_caches[f"atom_{i}"] = new_cache
+                else:
+                    hidden_states = layer(
+                        hidden_states,
+                        attention_mask=atom_attention_mask
+                        if self.training
+                        else attention_mask,
+                        causal_mask=use_causal_mask,
+                    )
+
+        for i, layer in enumerate(self.integration_layers):
+            layer_cache = None if kv_caches is None else kv_caches.get(f"integration_{i}")
+            
+            if use_kv_cache and kv_caches is not None:
+                hidden_states, new_cache = layer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    causal_mask=use_causal_mask,
+                    kv_cache=layer_cache,
+                    use_kv_cache=True,
+                )
+                kv_caches[f"integration_{i}"] = new_cache
+            else:
                 hidden_states = layer(
                     hidden_states,
-                    attention_mask=atom_attention_mask
-                    if self.training
-                    else attention_mask,
+                    attention_mask=attention_mask,
                     causal_mask=use_causal_mask,
                 )
-
-        for layer in self.integration_layers:
-            hidden_states = layer(
-                hidden_states,
-                attention_mask=attention_mask,
-                causal_mask=use_causal_mask,
-            )
 
         logits = self.lm_head(hidden_states)
 
@@ -1103,6 +1280,7 @@ class HierarchicalCrystalTransformer(nn.Module):
         eos_token_id: Optional[int] = None,
         pad_token_id: int = 2,
         verbose: bool = False,
+        use_kv_cache: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
         Generate sequences using autoregressive generation with space group and Wyckoff constraints.
@@ -1143,6 +1321,28 @@ class HierarchicalCrystalTransformer(nn.Module):
         # Initialize constraint handler
         constraint_handler = CrystalConstraintHandler(constraints)
 
+        # Initialize KV caches for all transformer layers if KV caching is enabled
+        kv_caches = None
+        if use_kv_cache:
+            kv_caches = {
+                # Composition encoder layers
+                **{f"composition_{i}": None for i in range(len(self.composition_encoder))},
+                # Space group encoder layers
+                **{f"space_group_{i}": None for i in range(len(self.space_group_encoder))},
+                # Lattice encoder layers
+                **{f"lattice_{i}": None for i in range(len(self.lattice_encoder))},
+                # Atom encoder layers
+                **{f"atom_{i}": None for i in range(len(self.atom_encoder))},
+                # Integration layers
+                **{f"integration_{i}": None for i in range(len(self.integration_layers))},
+                # Cross-attention layers
+                "sg_from_comp": None,
+                "lattice_from_sg": None,
+                "atom_from_lattice": None,
+            }
+            if verbose:
+                print("Initialized KV caches for generation with KV-caching enabled")
+        
         while True:
             # Make sure all modules are active during generation in continuous mode
             if self.config.prediction_mode == "continuous" and hasattr(
@@ -1165,6 +1365,8 @@ class HierarchicalCrystalTransformer(nn.Module):
                 segment_ids=generated_segments,
                 attention_mask=attention_mask,
                 use_causal_mask=True,
+                kv_caches=kv_caches,
+                use_kv_cache=use_kv_cache,
             )
 
             # Restore original active modules

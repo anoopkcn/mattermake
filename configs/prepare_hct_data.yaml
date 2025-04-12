@@ -9,7 +9,7 @@ task_name: "prepare_crystal_data"
 
 # Input data configuration
 input_csv: "/p/project1/hai_solaihack/datasets/mp_20/train.csv"  # Adjust path as needed
-output_dir: "${paths.data_dir}/crystal_data"
+output_dir: "${paths.data_dir}/hct_data"
 
 # Data processing parameters
 max_seq_length: 512

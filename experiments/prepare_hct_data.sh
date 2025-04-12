@@ -11,11 +11,11 @@ export TOKENIZERS_PARALLELISM=false
 
 srun --gres=gpu:0 --nodes=1 --ntasks-per-node=1 --cpu-bind=none bash -c "
     source /p/project1/hai_solaihack/chandran1/mattermake/.venv/bin/activate
-    cd /p/project1/hai_solaihack/chandran1/mattermake
+    cd /p/project1/hai_solaihack/chandran1/mattermake/experiments
 
-    python -m mattermake.scripts.prepare_crystal_data \
-        --max_structures 100000 \
+    python prepare_hct_data.py \
+        --max_structures 50000 \
         --input_csv="/p/project1/hai_solaihack/datasets/alex_mp_20/alex_mp_20/train.csv" \
-        --output_dir="/p/project1/hai_solaihack/chandran1/mattermake/data/structure_tokens_100k" \
+        --output_dir="/p/project1/hai_solaihack/chandran1/mattermake/data/hct_tokens_50k" \
         --standardize
 "

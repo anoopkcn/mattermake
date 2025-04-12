@@ -177,7 +177,7 @@ if __name__ == "__main__":
     main()
 
     # Usage::
-    # python -m mattermake.scripts.prepare_crystal_data \
+    # python prepare_hct_data.py \
     # --input_csv path/to/your/structures.csv \
     # --output_dir processed_data \
     # --material_id_col material_id \

@@ -2,7 +2,7 @@
 
 defaults:
   - _self_
-  - data: hct_sequence.yaml
+  - data: hct.yaml
   - model:  hct.yaml
   - callbacks: default.yaml
   - logger: wandb.yaml

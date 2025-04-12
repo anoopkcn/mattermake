@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import List, Dict, Tuple
 import logging
 import spglib
+from mattermake.utils.hct_wyckoff_mapping import SpaceGroupWyckoffMapping
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,9 @@ class CrystalTokenizer:
         self.coordinate_precision = coordinate_precision
         self.lattice_bins = lattice_bins
         self.max_element_count = max_element_count
+        
+        # Initialize Wyckoff mapping
+        self.wyckoff_mapping = SpaceGroupWyckoffMapping()
 
         # Initialize vocabulary
         self._init_vocabulary()
@@ -226,6 +230,19 @@ class CrystalTokenizer:
             self.idx_to_token[token_id] = token_name
             self.coord_tokens[i] = token_id
 
+        # Combined Wyckoff-multiplicity tokens
+        wyckoff_mult_offset = 3000
+        self.wyckoff_mult_tokens = {}
+        for sg in range(1, 231):
+            for letter in "abcdefghijklmnopqrstuvwxyz":
+                mult = self.wyckoff_mapping.get_wyckoff_multiplicity(sg, letter)
+                if mult > 0:  # Valid combination
+                    token_name = f"WYCK_{letter}{mult}"
+                    token_id = wyckoff_mult_offset + (sg * 100) + ord(letter) - ord('a')
+                    self.vocab[token_name] = token_id
+                    self.idx_to_token[token_id] = token_name
+                    self.wyckoff_mult_tokens[(sg, letter, mult)] = token_id
+
         self.vocab_size = len(self.vocab)
         logger.info(f"Vocabulary initialized with {self.vocab_size} tokens")
 
@@ -332,10 +349,24 @@ class CrystalTokenizer:
                 tokens.append(element_token)
                 segment_ids.append(self.SEGMENT_ELEMENT)
 
-            wyckoff_token = self.wyckoff_tokens.get(site["wyckoff"])
-            if wyckoff_token:
-                tokens.append(wyckoff_token)
+            # Get Wyckoff letter and corresponding multiplicity
+            wyckoff_letter = site["wyckoff"]
+            # Get multiplicity from mapping
+            multiplicity = self.wyckoff_mapping.get_wyckoff_multiplicity(
+                spacegroup, wyckoff_letter
+            )
+            
+            # Use combined Wyckoff-multiplicity token
+            wyckoff_mult_token = self.wyckoff_mult_tokens.get((spacegroup, wyckoff_letter, multiplicity))
+            if wyckoff_mult_token:
+                tokens.append(wyckoff_mult_token)
                 segment_ids.append(self.SEGMENT_WYCKOFF)
+            else:
+                # Fallback to just using Wyckoff letter if no combined token exists
+                wyckoff_token = self.wyckoff_tokens.get(wyckoff_letter)
+                if wyckoff_token:
+                    tokens.append(wyckoff_token)
+                    segment_ids.append(self.SEGMENT_WYCKOFF)
 
             coords = site["coords"]
             for coord in coords:
@@ -382,9 +413,19 @@ class CrystalTokenizer:
             "coordinate_mask": [False] * seq_length,
         }
 
-        # TODO:: populated based on
-        # constraints specific to the space group and composition
-
+        # Use the Wyckoff mapping to create dynamic constraints
+        allowed_wyckoff = self.wyckoff_mapping.get_allowed_wyckoff_positions(space_group)
+        
+        # Create a mask for valid Wyckoff positions for this space group
+        wyckoff_mask = self.wyckoff_mapping.create_wyckoff_mask(space_group)
+        
+        # At this point we have the allowed Wyckoff positions and a mask
+        # The actual mapping of this to token positions would depend on how
+        # we index into the sequence during generation
+        # For now, we'll just store this for future use
+        self._current_allowed_wyckoff = allowed_wyckoff
+        self._current_wyckoff_mask = wyckoff_mask
+        
         return masks
 
     def pad_sequence(

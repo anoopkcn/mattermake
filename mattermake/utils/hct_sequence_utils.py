@@ -2,6 +2,7 @@ from typing import List, Dict, Any, Optional
 from pymatgen.core import Structure, Lattice
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 import logging
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,10 @@ class CrystalSequenceDecoder:
             tokenizer: A CrystalTokenizer instance
         """
         self.tokenizer = tokenizer
+        
+        # Add the Wyckoff mapping for multiplicity handling
+        from mattermake.utils.hct_wyckoff_mapping import SpaceGroupWyckoffMapping
+        self.wyckoff_mapping = SpaceGroupWyckoffMapping()
 
         self.SEGMENT_SPECIAL = 0
         self.SEGMENT_SPACE_GROUP = 1
@@ -83,11 +88,28 @@ class CrystalSequenceDecoder:
             return token_name[5:]
         return None
 
-    def token_to_wyckoff(self, token_id: int) -> Optional[str]:
-        """Convert a token ID to a Wyckoff letter"""
+    def token_to_wyckoff(self, token_id: int) -> Optional[tuple]:
+        """Convert a token ID to a Wyckoff letter and multiplicity
+        
+        Returns:
+            Tuple of (letter, multiplicity) or just letter if using old format
+        """
         token_name = self.tokenizer.idx_to_token.get(token_id)
-        if token_name and token_name.startswith("WYCK_"):
+        
+        # Handle combined Wyckoff-multiplicity tokens (e.g., "WYCK_a4")
+        if token_name and token_name.startswith("WYCK_") and len(token_name) > 6:
+            try:
+                letter = token_name[5]
+                multiplicity = int(token_name[6:])
+                return (letter, multiplicity)
+            except (ValueError, IndexError):
+                # Fallback to just the letter
+                return token_name[5] if len(token_name) > 5 else None
+        
+        # Handle original Wyckoff tokens (e.g., "WYCK_a")
+        elif token_name and token_name.startswith("WYCK_"):
             return token_name[5:]
+            
         return None
 
     def token_to_lattice_param(self, token_id: int, param_type: str) -> Optional[float]:
@@ -184,7 +206,17 @@ class CrystalSequenceDecoder:
                 current_wyckoff = None
 
             elif segment == self.SEGMENT_WYCKOFF:
-                current_wyckoff = self.token_to_wyckoff(token)
+                wyckoff_result = self.token_to_wyckoff(token)
+                
+                # Check if it's a tuple (combined format) or string (old format)
+                if isinstance(wyckoff_result, tuple):
+                    letter, multiplicity = wyckoff_result
+                    current_wyckoff = {
+                        "letter": letter,
+                        "multiplicity": multiplicity
+                    }
+                else:
+                    current_wyckoff = wyckoff_result
 
             elif segment == self.SEGMENT_COORDINATE:
                 coord_value = self.token_to_coordinate(token)
@@ -273,16 +305,52 @@ class CrystalSequenceDecoder:
         # For full implementation, this would use pymatgen symmetry operations
         # to generate all equivalent positions
 
-        # For now, just use the provided coordinates TODO
+        # Process atoms with Wyckoff position information
         for atom in atoms:
             element = atom["element"]
+            wyckoff_data = atom["wyckoff"]
             atom_coords = atom["coords"]
-
+            
+            # Check if we have detailed Wyckoff data with multiplicity
+            if isinstance(wyckoff_data, dict) and "multiplicity" in wyckoff_data:
+                wyckoff_letter = wyckoff_data["letter"]
+                multiplicity = wyckoff_data["multiplicity"]
+                
+                # Log the Wyckoff position and multiplicity info
+                logger.debug(f"Processing Wyckoff position {wyckoff_letter} with multiplicity {multiplicity}")
+                
+                # Make sure coords are properly formatted
+                if len(atom_coords) < 3:
+                    atom_coords = atom_coords + [0.0] * (3 - len(atom_coords))
+                elif len(atom_coords) > 3:
+                    atom_coords = atom_coords[:3]
+                
+                # Use the multiplicity to generate equivalent positions
+                try:
+                    # Convert coords to numpy array for processing
+                    coords_array = np.array([atom_coords])
+                    
+                    # Generate equivalent positions using the Wyckoff mapping
+                    equiv_coords = self.wyckoff_mapping.generate_symmetry_equivalent_positions(
+                        coords_array, space_group, wyckoff_letter
+                    )
+                    
+                    # Add all equivalent positions
+                    for coord in equiv_coords:
+                        species.append(element)
+                        coords.append(coord.tolist() if hasattr(coord, 'tolist') else coord)
+                        
+                    continue  # Skip the standard addition below
+                except Exception as e:
+                    # Log the error and fall back to adding just the original position
+                    logger.warning(f"Error generating equivalent positions: {e}")
+            
+            # If no multiplicity data or generation failed, add the single position
             if len(atom_coords) < 3:
                 atom_coords = atom_coords + [0.0] * (3 - len(atom_coords))
             elif len(atom_coords) > 3:
                 atom_coords = atom_coords[:3]
-
+                
             species.append(element)
             coords.append(atom_coords)
 

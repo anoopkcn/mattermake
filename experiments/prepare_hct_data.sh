@@ -14,8 +14,8 @@ srun --gres=gpu:0 --nodes=1 --ntasks-per-node=1 --cpu-bind=none bash -c "
     cd /p/project1/hai_solaihack/chandran1/mattermake/experiments
 
     python prepare_hct_data.py \
-        --max_structures 50000 \
+        --max_structures 60000 \
         --input_csv="/p/project1/hai_solaihack/datasets/alex_mp_20/alex_mp_20/train.csv" \
-        --output_dir="/p/project1/hai_solaihack/chandran1/mattermake/data/hct_tokens_50k" \
+        --output_dir="/p/project1/hai_solaihack/chandran1/mattermake/data/hct_tokens_60k" \
         --standardize
 "

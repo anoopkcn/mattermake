@@ -57,6 +57,13 @@ class HierarchicalCrystalTransformerConfig:
 
     # Whether to apply Wyckoff position constraints
     apply_wyckoff_constraints: bool = False
+    
+    # Whether to use combined Wyckoff-multiplicity tokens
+    use_combined_wyckoff_tokens: bool = True
+    
+    # Number of combined Wyckoff-multiplicity tokens
+    # Default calculation: ~230 space groups * 26 letters = 5980 possible combinations
+    num_wyckoff_mult_tokens: int = 6000
 
     SEGMENT_SPECIAL: int = 0
     SEGMENT_COMPOSITION: int = 1
@@ -430,6 +437,15 @@ class HierarchicalCrystalTransformer(nn.Module):
         self.wyckoff_head = nn.Linear(
             config.hidden_size, 26
         )  # 26 Wyckoff letters (a-z)
+        
+        # Add combined Wyckoff-multiplicity head if enabled
+        if hasattr(config, "use_combined_wyckoff_tokens") and config.use_combined_wyckoff_tokens:
+            self.wyckoff_mult_head = nn.Linear(
+                config.hidden_size, config.num_wyckoff_mult_tokens
+            )  # Combined Wyckoff letter + multiplicity tokens
+        else:
+            self.wyckoff_mult_head = None
+            
         self.element_head = nn.Linear(
             config.hidden_size, 95
         )  # ~95 elements commonly found in crystals
@@ -1031,10 +1047,23 @@ class HierarchicalCrystalTransformer(nn.Module):
                         for i, batch_idx in enumerate(batch_indices):
                             batch_idx = batch_idx.item()
 
-                            # Original fixed Wyckoff head
-                            wyckoff_logits_i = self.wyckoff_head(
-                                wyckoff_hidden[i : i + 1]
+                            # Determine whether to use combined or regular Wyckoff head
+                            use_combined = (
+                                hasattr(self.config, "use_combined_wyckoff_tokens")
+                                and self.config.use_combined_wyckoff_tokens
+                                and self.wyckoff_mult_head is not None
                             )
+                            
+                            if use_combined:
+                                # Use combined Wyckoff-multiplicity head
+                                wyckoff_logits_i = self.wyckoff_mult_head(
+                                    wyckoff_hidden[i : i + 1]
+                                )
+                            else:
+                                # Original fixed Wyckoff head
+                                wyckoff_logits_i = self.wyckoff_head(
+                                    wyckoff_hidden[i : i + 1]
+                                )
 
                             # Apply space group constraints if applicable
                             if (
@@ -1045,17 +1074,39 @@ class HierarchicalCrystalTransformer(nn.Module):
                             ):
                                 space_group = selected_space_groups[batch_idx]
 
-                                # Create a mask for valid Wyckoff positions
-                                valid_mask = torch.tensor(
-                                    self._sg_wyckoff_mapping.create_wyckoff_mask(
-                                        space_group
-                                    ),
-                                    device=wyckoff_hidden.device,
-                                    dtype=torch.bool,
-                                )
+                                # Create appropriate mask based on whether we're using combined tokens
+                                if use_combined:
+                                    # Create a basic mask for the current space group
+                                    # Get allowed Wyckoff positions
+                                    allowed_wyckoff = self._sg_wyckoff_mapping.get_allowed_wyckoff_positions(space_group)
+                                    
+                                    # Create mask for combined tokens (only allows tokens for current space group)
+                                    valid_mask = torch.zeros(
+                                        self.config.num_wyckoff_mult_tokens,
+                                        device=wyckoff_hidden.device,
+                                        dtype=torch.bool
+                                    )
+                                    
+                                    # Set valid positions based on the tokens for this space group
+                                    offset = 3000 + (space_group * 100)  # Combined token range starts at 3000
+                                    for letter_idx, letter in enumerate(allowed_wyckoff):
+                                        idx = ord(letter) - ord('a')
+                                        if 0 <= idx < 26:
+                                            token_id = offset + idx
+                                            if token_id < valid_mask.size(0):
+                                                valid_mask[token_id] = True
+                                else:
+                                    # Original approach for individual Wyckoff tokens
+                                    valid_mask = torch.tensor(
+                                        self._sg_wyckoff_mapping.create_wyckoff_mask(
+                                            space_group
+                                        ),
+                                        device=wyckoff_hidden.device,
+                                        dtype=torch.bool,
+                                    )
 
                                 # Apply the mask by setting invalid positions to -inf
-                                if valid_mask.shape[0] <= wyckoff_logits_i.shape[1]:
+                                if valid_mask is not None and valid_mask.shape[0] <= wyckoff_logits_i.shape[1]:
                                     wyckoff_logits_i[:, ~valid_mask] = float("-inf")
 
                             all_wyckoff_logits.append(wyckoff_logits_i)
@@ -1066,16 +1117,41 @@ class HierarchicalCrystalTransformer(nn.Module):
 
                         if labels is not None:
                             wyckoff_labels = labels[wyckoff_mask]
+                            
+                            # Determine which head was used (combined or regular)
+                            is_using_combined = (
+                                hasattr(self.config, "use_combined_wyckoff_tokens")
+                                and self.config.use_combined_wyckoff_tokens
+                                and self.wyckoff_mult_head is not None
+                                and "wyckoff_mult_head" in str(wyckoff_logits.shape)
+                            )
+                            
+                            # Get the appropriate output feature size based on which head was used
+                            if is_using_combined and hasattr(self, "wyckoff_mult_head") and self.wyckoff_mult_head is not None:
+                                out_features = self.wyckoff_mult_head.out_features
+                            else:
+                                out_features = self.wyckoff_head.out_features
 
+                            # Validate labels against the correct output size
                             valid_labels = (wyckoff_labels >= 0) & (
-                                wyckoff_labels < self.wyckoff_head.out_features
+                                wyckoff_labels < out_features
                             ) | (wyckoff_labels == -100)
+                            
                             if not torch.all(valid_labels):
-                                wyckoff_labels = torch.where(
-                                    valid_labels,
-                                    wyckoff_labels,
-                                    torch.tensor(-100, device=wyckoff_labels.device),
-                                )
+                                # Handle case where labels might be for the wrong head type
+                                if is_using_combined and torch.any(wyckoff_labels >= 3000):
+                                    # Labels appear to be for combined tokens, keep them
+                                    pass
+                                elif not is_using_combined and torch.any(wyckoff_labels < 3000):
+                                    # Labels appear to be for regular tokens, keep them
+                                    pass
+                                else:
+                                    # Labels need to be replaced with ignore_index
+                                    wyckoff_labels = torch.where(
+                                        valid_labels,
+                                        wyckoff_labels,
+                                        torch.tensor(-100, device=wyckoff_labels.device),
+                                    )
 
                             if wyckoff_logits.size(0) == wyckoff_labels.size(0):
                                 try:

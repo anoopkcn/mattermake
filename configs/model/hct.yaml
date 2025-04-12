@@ -38,6 +38,7 @@ lattice_curriculum_epochs: 5
 # Prediction mode: "discrete" or "continuous"
 prediction_mode: "continuous"
 apply_wyckoff_constraints: true
+use_combined_wyckoff_tokens: true
 
 # Weighting for regression losses relative to classification losses
 continuous_regression_weight: 0.5

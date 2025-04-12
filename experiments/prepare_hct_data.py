@@ -70,7 +70,12 @@ def main():
     tokenizer = CrystalTokenizer(
         max_sequence_length=args.max_seq_length,
         coordinate_precision=args.coord_precision,
+        # Enable combined Wyckoff-multiplicity tokens
     )
+    
+    # Make sure the tokenizer's combined Wyckoff-multiplicity feature is enabled
+    if hasattr(tokenizer, 'use_combined_wyckoff_tokens'):
+        tokenizer.use_combined_wyckoff_tokens = True
 
     logger.info(f"Loading CSV file: {args.input_csv}")
     df = pd.read_csv(args.input_csv)

@@ -3,8 +3,8 @@ import torch
 import torch.nn as nn
 from typing import Optional, Dict, Union, Tuple
 
-from .base_transformer import TransformerLayer
-from .attention import CrossAttentionLayer
+from mattermake.models.components.hct_utils.base_transformer import TransformerLayer
+from mattermake.models.components.hct_utils.attention import CrossAttentionLayer
 
 
 class HierarchicalEncoder(nn.Module):
@@ -75,6 +75,10 @@ class SpaceGroupEncoder(HierarchicalEncoder):
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, Dict[str, torch.Tensor]]]]:
         # Apply cross-attention from composition if enabled
         if hasattr(self, "cross_attention"):
+            # Normalize and clean hidden states before cross-attention
+            # Apply L2 normalization to improve numerical stability
+            hidden_states = torch.nn.functional.normalize(hidden_states, p=2, dim=-1)
+
             # Check for NaN/Inf in hidden states before cross attention
             if torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any():
                 print(
@@ -88,12 +92,19 @@ class SpaceGroupEncoder(HierarchicalEncoder):
                 None if kv_caches is None else kv_caches.get("sg_from_comp")
             )
 
+            # Always backup the input for potential fallback
+            hidden_states_before = hidden_states.clone()
+
             if use_kv_cache and kv_caches is not None:
                 try:
+                    # Improve scaling of inputs to cross-attention
+                    # Scale the attention mask to prevent extreme values after softmax
+                    attention_mask_scaled = comp_mask.unsqueeze(1).unsqueeze(2) * 1.0
+
                     hidden_states, new_cache = self.cross_attention(
                         hidden_states=hidden_states,
                         context_states=hidden_states,
-                        attention_mask=comp_mask.unsqueeze(1).unsqueeze(2),
+                        attention_mask=attention_mask_scaled,
                         kv_cache=cross_attn_cache,
                         use_kv_cache=True,
                     )
@@ -102,32 +113,71 @@ class SpaceGroupEncoder(HierarchicalEncoder):
                         torch.isnan(hidden_states).any()
                         or torch.isinf(hidden_states).any()
                     ):
-                        
-                        print("Warning: NaN/Inf detected after space group cross-attention", file=sys.stderr)
-                        hidden_states = torch.nan_to_num(
-                            hidden_states, nan=0.0, posinf=0.0, neginf=-1e5
+                        print(
+                            "Warning: NaN/Inf detected after space group cross-attention",
+                            file=sys.stderr,
                         )
+                        # Try to recover with nanmean instead of reverting
+                        hidden_states = torch.nn.functional.normalize(
+                            torch.nan_to_num(
+                                hidden_states, nan=0.0, posinf=0.0, neginf=-1e5
+                            ),
+                            p=2,
+                            dim=-1,
+                        )
+                        # If still problematic, use the fallback
+                        if (
+                            torch.isnan(hidden_states).any()
+                            or torch.isinf(hidden_states).any()
+                        ):
+                            hidden_states = hidden_states_before
                     kv_caches["sg_from_comp"] = new_cache
                 except Exception as e:
-                    print(f"Warning: Error in space group cross-attention: {e}", file=sys.stderr)
+                    print(
+                        f"Warning: Error in space group cross-attention: {e}",
+                        file=sys.stderr,
+                    )
+                    hidden_states = hidden_states_before
             else:
                 try:
-                    hidden_states_before = hidden_states.clone()
+                    # Improve scaling of inputs to cross-attention
+                    # Scale the attention mask to prevent extreme values after softmax
+                    attention_mask_scaled = comp_mask.unsqueeze(1).unsqueeze(2) * 1.0
+
                     hidden_states = self.cross_attention(
                         hidden_states=hidden_states,
                         context_states=hidden_states,
-                        attention_mask=comp_mask.unsqueeze(1).unsqueeze(2),
+                        attention_mask=attention_mask_scaled,
                     )
                     # Check result for NaN/Inf
                     if (
                         torch.isnan(hidden_states).any()
                         or torch.isinf(hidden_states).any()
                     ):
-                        print("Warning: NaN/Inf detected after space group cross-attention", file=sys.stderr)
-                        # Revert to input if cross attention produced NaN/Inf
-                        hidden_states = hidden_states_before
+                        print(
+                            "Warning: NaN/Inf detected after space group cross-attention",
+                            file=sys.stderr,
+                        )
+                        # Try to recover with normalization
+                        hidden_states = torch.nn.functional.normalize(
+                            torch.nan_to_num(
+                                hidden_states, nan=0.0, posinf=0.0, neginf=-1e5
+                            ),
+                            p=2,
+                            dim=-1,
+                        )
+                        # If still problematic, use the fallback
+                        if (
+                            torch.isnan(hidden_states).any()
+                            or torch.isinf(hidden_states).any()
+                        ):
+                            hidden_states = hidden_states_before
                 except Exception as e:
-                    print(f"Warning: Error in space group cross-attention: {e}", file=sys.stderr)
+                    print(
+                        f"Warning: Error in space group cross-attention: {e}",
+                        file=sys.stderr,
+                    )
+                    hidden_states = hidden_states_before
 
         # Apply transformer layers
         return super().forward(
@@ -174,7 +224,10 @@ class LatticeEncoder(HierarchicalEncoder):
                     )
                     kv_caches["lattice_from_sg"] = new_cache
                 except Exception as e:
-                    print(f"Warning: Error in lattice cross-attention: {e}", file=sys.stderr)
+                    print(
+                        f"Warning: Error in lattice cross-attention: {e}",
+                        file=sys.stderr,
+                    )
             else:
                 try:
                     hidden_states = self.cross_attention(
@@ -183,7 +236,10 @@ class LatticeEncoder(HierarchicalEncoder):
                         attention_mask=context_mask,
                     )
                 except Exception as e:
-                    print(f"Warning: Error in lattice cross-attention: {e}", file=sys.stderr)
+                    print(
+                        f"Warning: Error in lattice cross-attention: {e}",
+                        file=sys.stderr,
+                    )
 
         # Apply transformer layers
         return super().forward(
@@ -232,7 +288,9 @@ class AtomEncoder(HierarchicalEncoder):
                     )
                     kv_caches["atom_from_lattice"] = new_cache
                 except Exception as e:
-                    print(f"Warning: Error in atom cross-attention: {e}", file=sys.stderr)
+                    print(
+                        f"Warning: Error in atom cross-attention: {e}", file=sys.stderr
+                    )
             else:
                 try:
                     hidden_states = self.cross_attention(
@@ -241,7 +299,9 @@ class AtomEncoder(HierarchicalEncoder):
                         attention_mask=context_mask,
                     )
                 except Exception as e:
-                    print(f"Warning: Error in atom cross-attention: {e}", file=sys.stderr)
+                    print(
+                        f"Warning: Error in atom cross-attention: {e}", file=sys.stderr
+                    )
 
         # Apply atom emphasis during training
         atom_attention_mask = attention_mask

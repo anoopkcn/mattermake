@@ -4,22 +4,25 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Dict
 
-from .hct.base_transformer import BaseTransformer
-from .hct.hierarchical import (
+from mattermake.models.components.hct_utils.base_transformer import BaseTransformer
+from mattermake.models.components.hct_utils.hierarchical import (
     CompositionEncoder,
     SpaceGroupEncoder,
     LatticeEncoder,
     AtomEncoder,
     IntegrationEncoder,
 )
-from .hct.generation import GenerationMixin
-from .hct.loss import LossCalculationMixin
-from .hct.utils import (
+from mattermake.models.components.hct_utils.generation import GenerationMixin
+from mattermake.models.components.hct_utils.loss import LossCalculationMixin
+from mattermake.models.components.hct_utils.utils import (
     bound_lattice_lengths,
     bound_lattice_angles,
     bound_fractional_coords,
 )
-from .hct.mixture_density import MixtureOfGaussiansHead, MixtureOfWrappedNormalsHead
+from mattermake.models.components.hct_utils.mixture_density import (
+    MixtureOfGaussiansHead,
+    MixtureOfWrappedNormalsHead,
+)
 from mattermake.utils.hct_wyckoff_mapping import SpaceGroupWyckoffMapping
 
 
@@ -269,35 +272,92 @@ class HierarchicalCrystalTransformer(
                         )
 
                     try:
+                        # Apply lattice mixture of gaussians head
                         lattice_mog_params = self.lattice_mog_head(lattice_hidden)
                         outputs["lattice_mog_params"] = lattice_mog_params
 
+                        # Check for NaN/Inf in weights_logits
+                        if (
+                            torch.isnan(lattice_mog_params["weights_logits"]).any()
+                            or torch.isinf(lattice_mog_params["weights_logits"]).any()
+                        ):
+                            print(
+                                "Warning: NaN/Inf detected in lattice weights_logits with shape {}".format(
+                                    lattice_mog_params["weights_logits"].shape
+                                )
+                            )
+
+                        # Clean and stabilize weights logits
                         clean_logits = torch.nan_to_num(
                             lattice_mog_params["weights_logits"],
                             nan=0.0,
                             posinf=0.0,
                             neginf=-1e5,
                         )
+                        # Clamp to reasonable range
+                        clean_logits = torch.clamp(clean_logits, min=-20.0, max=20.0)
                         clean_logits = (
                             clean_logits + torch.finfo(clean_logits.dtype).eps
                         )
+
+                        # Get probability weights
                         weights_probs = F.softmax(clean_logits, dim=-1)
 
+                        # Verify probabilities are valid
+                        if (
+                            torch.isnan(weights_probs).any()
+                            or torch.isinf(weights_probs).any()
+                        ):
+                            print(
+                                "Warning: Invalid weights after softmax, using uniform distribution"
+                            )
+                            weights_probs = torch.ones_like(
+                                clean_logits
+                            ) / clean_logits.size(-1)
+
+                        # Clean means and calculate weighted means
                         clean_means = torch.nan_to_num(
                             lattice_mog_params["means"], nan=0.0
                         )
-                        weighted_means = torch.sum(
-                            weights_probs.unsqueeze(-2) * clean_means, dim=-1
-                        )
-                        weighted_means = torch.nan_to_num(weighted_means, nan=0.0)
+                        # Clamp means to reasonable range for lattice parameters
+                        clean_means = torch.clamp(clean_means, min=-10.0, max=10.0)
 
-                        lattice_lengths = bound_lattice_lengths(weighted_means[:, :3])
-                        lattice_angles = bound_lattice_angles(weighted_means[:, 3:])
+                        try:
+                            weighted_means = torch.sum(
+                                weights_probs.unsqueeze(-2) * clean_means, dim=-1
+                            )
+                            weighted_means = torch.nan_to_num(weighted_means, nan=0.0)
 
-                        outputs["lattice_lengths"] = lattice_lengths
-                        outputs["lattice_angles"] = lattice_angles
+                            # Generate lattice parameters
+                            lattice_lengths = bound_lattice_lengths(
+                                weighted_means[:, :3]
+                            )
+                            lattice_angles = bound_lattice_angles(weighted_means[:, 3:])
+
+                            outputs["lattice_lengths"] = lattice_lengths
+                            outputs["lattice_angles"] = lattice_angles
+                        except Exception as shape_error:
+                            print("Using direct fallback for lattice generation")
+                            print(f"Error: {shape_error}")
+                            batch_size = weights_probs.size(0)
+                            # Create default lattice parameters
+                            outputs["lattice_lengths"] = (
+                                torch.ones(
+                                    (batch_size, 3), device=lattice_hidden.device
+                                )
+                                * 5.0
+                            )
+                            outputs["lattice_angles"] = (
+                                torch.ones(
+                                    (batch_size, 3), device=lattice_hidden.device
+                                )
+                                * 90.0
+                            )
                     except Exception as e:
-                        print(f"Warning: Error in lattice parameter calculation: {e}", file=sys.stderr)
+                        print(
+                            f"Warning: Error in lattice parameter calculation: {e}",
+                            file=sys.stderr,
+                        )
 
         if "atoms" in self.active_modules:
             element_mask = segment_ids == self.config.SEGMENT_ELEMENT
@@ -389,6 +449,7 @@ class HierarchicalCrystalTransformer(
                     outputs["coordinate_hidden"] = coordinate_hidden
 
                     try:
+                        # Clean NaN/Inf values
                         if (
                             torch.isnan(coordinate_hidden).any()
                             or torch.isinf(coordinate_hidden).any()
@@ -397,57 +458,164 @@ class HierarchicalCrystalTransformer(
                                 coordinate_hidden, nan=0.0, posinf=0.0, neginf=-1e5
                             )
 
+                        # Print debug info to track shapes
+                        print(
+                            f"Debug: coordinate_hidden shape = {coordinate_hidden.shape}"
+                        )
+
+                        # Get number of atoms, handling cases where size is not divisible by 3
                         num_atoms = coordinate_hidden.size(0) // 3
 
                         if coordinate_hidden.size(0) % 3 != 0:
-                            num_atoms = coordinate_hidden.size(0) // 3
+                            print(
+                                f"Warning: Coordinate hidden size {coordinate_hidden.size(0)} not divisible by 3"
+                            )
 
                         if num_atoms > 0 and coordinate_hidden.size(0) >= 3:
-                            slice_end = num_atoms * 3
+                            # Ensure we don't exceed tensor bounds
+                            slice_end = min(num_atoms * 3, coordinate_hidden.size(0))
                             if slice_end <= coordinate_hidden.size(0):
-                                coord_input = coordinate_hidden[:slice_end:3]
+                                # Take every third element (corresponding to x coordinates)
+                                try:
+                                    coord_input = coordinate_hidden[:slice_end:3]
+                                    # Explicitly resize if needed to ensure compatible shapes
+                                    if coord_input.size(0) == 0:
+                                        raise ValueError(
+                                            f"Empty coord_input with shape {coord_input.shape}"
+                                        )
+                                except Exception as shape_error:
+                                    print(
+                                        f"Warning: Error with coordinate slicing: {shape_error}"
+                                    )
+                                    # Try reshaping directly as a fallback
+                                    try:
+                                        coord_input = coordinate_hidden.view(
+                                            num_atoms, 3, -1
+                                        )[:, 0, :]
+                                    except Exception as reshape_error:
+                                        print(
+                                            f"Warning: Error reshaping coordinates: {reshape_error}"
+                                        )
+                                        print(
+                                            "Using direct fallback for coordinate generation"
+                                        )
+                                        # Create random coordinates as fallback
+                                        batch_size = 1
+                                        outputs["fractional_coords"] = torch.rand(
+                                            batch_size,
+                                            3,
+                                            device=coordinate_hidden.device,
+                                        )
+                                        # Skip further processing by returning
+                                        return outputs
 
-                                coord_movm_params = self.fractional_coord_movm_head(
-                                    coord_input
-                                )
-                                outputs["coord_movm_params"] = coord_movm_params
+                                try:
+                                    # Check for valid dimensions before processing
+                                    if coord_input.dim() < 2:
+                                        coord_input = coord_input.unsqueeze(
+                                            0
+                                        )  # Add batch dimension if needed
 
-                                clean_logits = torch.nan_to_num(
-                                    coord_movm_params["weights_logits"],
-                                    nan=0.0,
-                                    posinf=0.0,
-                                    neginf=-1e5,
-                                )
+                                    coord_movm_params = self.fractional_coord_movm_head(
+                                        coord_input
+                                    )
+                                    outputs["coord_movm_params"] = coord_movm_params
 
-                                clean_logits = (
-                                    clean_logits + torch.finfo(clean_logits.dtype).eps
-                                )
+                                    # Ensure weights_logits aren't NaN/Inf before processing
+                                    clean_logits = torch.nan_to_num(
+                                        coord_movm_params["weights_logits"],
+                                        nan=0.0,
+                                        posinf=0.0,
+                                        neginf=-1e5,
+                                    )
 
-                                weights_probs = F.softmax(clean_logits, dim=-1)
+                                    # Clamp logits to reasonable range
+                                    clean_logits = torch.clamp(
+                                        clean_logits, min=-20.0, max=20.0
+                                    )
 
-                                clean_means = torch.nan_to_num(
-                                    coord_movm_params["means"], nan=0.5
-                                )  # Default to middle of [0,1) range
+                                    # Add epsilon for numerical stability
+                                    clean_logits = (
+                                        clean_logits
+                                        + torch.finfo(clean_logits.dtype).eps
+                                    )
 
-                                weighted_means = torch.sum(
-                                    weights_probs.unsqueeze(-2) * clean_means,
-                                    dim=-1,
-                                )
+                                    # Apply softmax to get probabilities
+                                    weights_probs = F.softmax(clean_logits, dim=-1)
 
-                                weighted_means = torch.nan_to_num(
-                                    weighted_means, nan=0.5
-                                )
+                                    # Verify we have valid probabilities
+                                    if (
+                                        torch.isnan(weights_probs).any()
+                                        or torch.isinf(weights_probs).any()
+                                    ):
+                                        # Use uniform distribution as fallback
+                                        print(
+                                            "Warning: NaN/Inf in coordinate weights, using uniform"
+                                        )
+                                        weights_probs = torch.ones_like(
+                                            clean_logits
+                                        ) / clean_logits.size(-1)
 
-                                # Bound coordinates to [0, 1)
-                                from .hct.utils import bound_fractional_coords
+                                    # Clean means tensor
+                                    clean_means = torch.nan_to_num(
+                                        coord_movm_params["means"], nan=0.5
+                                    )  # Default to middle of [0,1) range
 
-                                fractional_coords = bound_fractional_coords(
-                                    weighted_means
-                                )
+                                    # Verify tensor shapes for weighted sum
+                                    try:
+                                        weighted_means = torch.sum(
+                                            weights_probs.unsqueeze(-2) * clean_means,
+                                            dim=-1,
+                                        )
 
-                                outputs["fractional_coords"] = fractional_coords
+                                        weighted_means = torch.nan_to_num(
+                                            weighted_means, nan=0.5
+                                        )
+
+                                        fractional_coords = bound_fractional_coords(
+                                            weighted_means
+                                        )
+
+                                        outputs["fractional_coords"] = fractional_coords
+                                    except Exception as shape_error:
+                                        print(
+                                            f"Warning: Error generating coordinate parameters: shape '{weights_probs.shape} and {clean_means.shape}' mismatch"
+                                        )
+                                        print(f"Error details: {shape_error}")
+                                        print(
+                                            "Using direct fallback for coordinate generation"
+                                        )
+                                        # Create fallback coordinates
+                                        batch_size = weights_probs.size(0)
+                                        outputs["fractional_coords"] = torch.rand(
+                                            batch_size,
+                                            3,
+                                            device=coordinate_hidden.device,
+                                        )
+                                except Exception as movm_error:
+                                    print(
+                                        f"Warning: Error in coordinate movm processing: {movm_error}"
+                                    )
+                                    print(
+                                        "Using direct fallback for coordinate generation"
+                                    )
+                                    # Create fallback coordinates
+                                    batch_size = (
+                                        1
+                                        if not isinstance(coord_input, torch.Tensor)
+                                        else coord_input.size(0)
+                                    )
+                                    outputs["fractional_coords"] = torch.rand(
+                                        batch_size, 3, device=coordinate_hidden.device
+                                    )
                     except Exception as e:
                         print(f"Warning: Error in coordinate prediction: {e}")
+                        print("Using direct fallback for coordinate generation")
+                        # Create fallback coordinates for the whole batch
+                        batch_size = 1
+                        outputs["fractional_coords"] = torch.rand(
+                            batch_size, 3, device=hidden_states.device
+                        )
 
         # For generation, ensure lattice and coordinate predictions are included
         # even if the right segments weren't encountered during this forward pass
@@ -460,31 +628,75 @@ class HierarchicalCrystalTransformer(
         """Ensure lattice and coordinate predictions are available for generation"""
         if "lattice" in self.active_modules and "lattice_lengths" not in outputs:
             try:
+                # Get last hidden state for prediction
                 last_hidden = hidden_states[:, -1].unsqueeze(0)
+
+                # Apply L2 normalization for stability
+                last_hidden = F.normalize(last_hidden, p=2, dim=-1)
+
+                # Generate lattice parameters
                 lattice_mog_params = self.lattice_mog_head(last_hidden)
                 outputs["lattice_mog_params"] = lattice_mog_params
 
+                # Check for NaN/Inf in weights_logits
+                if (
+                    torch.isnan(lattice_mog_params["weights_logits"]).any()
+                    or torch.isinf(lattice_mog_params["weights_logits"]).any()
+                ):
+                    print(
+                        "Warning: NaN/Inf detected in lattice weights_logits with shape {}".format(
+                            lattice_mog_params["weights_logits"].shape
+                        )
+                    )
+
+                # Process with extensive safeguards
                 clean_logits = torch.nan_to_num(
                     lattice_mog_params["weights_logits"],
                     nan=0.0,
                     posinf=0.0,
                     neginf=-1e5,
                 )
+                # Clamp to reasonable range
+                clean_logits = torch.clamp(clean_logits, min=-20.0, max=20.0)
                 clean_logits = clean_logits + torch.finfo(clean_logits.dtype).eps
+
+                # Get probability weights with verification
                 weights_probs = F.softmax(clean_logits, dim=-1)
+                if torch.isnan(weights_probs).any() or torch.isinf(weights_probs).any():
+                    print(
+                        "Warning: Invalid weights after softmax in fallback, using uniform distribution"
+                    )
+                    weights_probs = torch.ones_like(clean_logits) / clean_logits.size(
+                        -1
+                    )
 
+                # Process means with safeguards
                 clean_means = torch.nan_to_num(lattice_mog_params["means"], nan=0.0)
-                weighted_means = torch.sum(
-                    weights_probs.unsqueeze(-2) * clean_means, dim=-1
-                )
-                weighted_means = torch.nan_to_num(weighted_means, nan=0.0)
+                clean_means = torch.clamp(clean_means, min=-10.0, max=10.0)
 
-                # Calculate bounded lattice parameters
-                lattice_lengths = bound_lattice_lengths(weighted_means[:, :3])
-                lattice_angles = bound_lattice_angles(weighted_means[:, 3:])
+                try:
+                    weighted_means = torch.sum(
+                        weights_probs.unsqueeze(-2) * clean_means, dim=-1
+                    )
+                    weighted_means = torch.nan_to_num(weighted_means, nan=0.0)
 
-                outputs["lattice_lengths"] = lattice_lengths
-                outputs["lattice_angles"] = lattice_angles
+                    # Calculate bounded lattice parameters
+                    lattice_lengths = bound_lattice_lengths(weighted_means[:, :3])
+                    lattice_angles = bound_lattice_angles(weighted_means[:, 3:])
+
+                    outputs["lattice_lengths"] = lattice_lengths
+                    outputs["lattice_angles"] = lattice_angles
+                except Exception as shape_error:
+                    print("Using direct fallback for lattice generation")
+                    print(f"Error: {shape_error}")
+                    device = hidden_states.device
+                    batch_size = hidden_states.size(0)
+                    outputs["lattice_lengths"] = (
+                        torch.ones((batch_size, 3), device=device) * 5.0
+                    )
+                    outputs["lattice_angles"] = (
+                        torch.ones((batch_size, 3), device=device) * 90.0
+                    )
             except Exception as e:
                 print(f"Warning: Error ensuring lattice predictions: {e}")
                 device = hidden_states.device

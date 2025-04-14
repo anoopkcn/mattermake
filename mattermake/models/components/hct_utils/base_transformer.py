@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from typing import Optional, Dict, Union, Tuple
 
-from .attention import MultiHeadAttention
+from mattermake.models.components.hct_utils.attention import MultiHeadAttention
 
 
 class TransformerLayer(nn.Module):

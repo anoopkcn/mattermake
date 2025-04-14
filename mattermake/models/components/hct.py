@@ -53,15 +53,17 @@ class HierarchicalCrystalTransformerConfig:
     atom_loss_weight: float = 0.8
 
     # Mixture Density Network parameters
-    lattice_mixture_components: int = 5  # Number of components for lattice parameter MoG
+    lattice_mixture_components: int = (
+        5  # Number of components for lattice parameter MoG
+    )
     coord_mixture_components: int = 5  # Number of components for coordinate MoVM
 
     # Whether to apply Wyckoff position constraints
     apply_wyckoff_constraints: bool = False
-    
+
     # Whether to use combined Wyckoff-multiplicity tokens
     use_combined_wyckoff_tokens: bool = True
-    
+
     # Number of combined Wyckoff-multiplicity tokens
     # Default calculation: ~230 space groups * 26 letters = 5980 possible combinations
     num_wyckoff_mult_tokens: int = 6000
@@ -430,22 +432,30 @@ class HierarchicalCrystalTransformer(nn.Module):
 
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
+        # Space group prediction head with controlled initialization for stability
         self.space_group_head = nn.Linear(config.hidden_size, 230)  # 230 space groups
+        nn.init.xavier_normal_(
+            self.space_group_head.weight, gain=0.1
+        )  # Small init for stability
+        nn.init.constant_(self.space_group_head.bias, 0)  # Initialize bias to zero
 
         # We don't use discrete lattice parameters, so no need for this head
         self.lattice_param_head = None
         self.wyckoff_head = nn.Linear(
             config.hidden_size, 26
         )  # 26 Wyckoff letters (a-z)
-        
+
         # Add combined Wyckoff-multiplicity head if enabled
-        if hasattr(config, "use_combined_wyckoff_tokens") and config.use_combined_wyckoff_tokens:
+        if (
+            hasattr(config, "use_combined_wyckoff_tokens")
+            and config.use_combined_wyckoff_tokens
+        ):
             self.wyckoff_mult_head = nn.Linear(
                 config.hidden_size, config.num_wyckoff_mult_tokens
             )  # Combined Wyckoff letter + multiplicity tokens
         else:
             self.wyckoff_mult_head = None
-            
+
         self.element_head = nn.Linear(
             config.hidden_size, 95
         )  # ~95 elements commonly found in crystals
@@ -455,21 +465,21 @@ class HierarchicalCrystalTransformer(nn.Module):
 
         # Always use mixture density networks for continuous prediction
         from .mixture_density import MixtureOfGaussiansHead, MixtureOfWrappedNormalsHead
-        
+
         # Mixture of Gaussians for lattice parameters
         self.lattice_mog_head = MixtureOfGaussiansHead(
             hidden_size=config.hidden_size,
             output_dim=6,  # 3 lengths + 3 angles
-            n_mixtures=config.lattice_mixture_components
+            n_mixtures=config.lattice_mixture_components,
         )
-        
+
         # Mixture of wrapped normals for fractional coordinates
         self.fractional_coord_movm_head = MixtureOfWrappedNormalsHead(
             hidden_size=config.hidden_size,
             output_dim=3,  # x, y, z coordinates
-            n_mixtures=config.coord_mixture_components
+            n_mixtures=config.coord_mixture_components,
         )
-        
+
         # No standard regression heads - only using mixture density networks
         self.lattice_length_head = None
         self.lattice_angle_head = None
@@ -897,11 +907,49 @@ class HierarchicalCrystalTransformer(nn.Module):
 
                                 if sg_logits.size(0) == space_group_labels.size(0):
                                     try:
-                                        space_group_loss = F.cross_entropy(
-                                            sg_logits,
-                                            space_group_labels,
-                                            ignore_index=-100,
+                                        log_probs = F.log_softmax(sg_logits, dim=-1)
+
+                                        label_smoothing = 0.1
+                                        n_classes = log_probs.size(
+                                            -1
+                                        )  # Number of space groups (230)
+
+                                        # Create one-hot encoding of labels
+                                        mask = space_group_labels != -100
+                                        label_indices = space_group_labels.masked_fill(
+                                            ~mask, 0
                                         )
+                                        one_hot = torch.zeros_like(log_probs).scatter_(
+                                            1, label_indices.unsqueeze(1), 1.0
+                                        )
+
+                                        # Apply label smoothing: (1-α)×one_hot + α/K
+                                        smoothed_targets = (
+                                            one_hot * (1.0 - label_smoothing)
+                                            + label_smoothing / n_classes
+                                        )
+
+                                        loss_per_sample = -(
+                                            smoothed_targets * log_probs
+                                        ).sum(dim=1)
+
+                                        if mask.any():
+                                            space_group_loss = loss_per_sample[
+                                                mask
+                                            ].mean()
+                                            if torch.isnan(
+                                                space_group_loss
+                                            ) or torch.isinf(space_group_loss):
+                                                print(
+                                                    "Warning: NaN/Inf detected in space group loss computation!"
+                                                )
+                                                space_group_loss = torch.tensor(
+                                                    0.0, device=log_probs.device
+                                                )
+                                        else:
+                                            space_group_loss = torch.tensor(
+                                                0.0, device=log_probs.device
+                                            )
                                         outputs["space_group_loss"] = space_group_loss
                                     except Exception as e:
                                         print(
@@ -913,32 +961,39 @@ class HierarchicalCrystalTransformer(nn.Module):
                 if torch.any(lattice_mask):
                     lattice_hidden = hidden_states[lattice_mask]
                     if lattice_hidden.size(0) > 0:
-                        # Always use Mixture of Gaussians (MoG) for lattice predictions
                         lattice_mog_params = self.lattice_mog_head(lattice_hidden)
                         outputs["lattice_mog_params"] = lattice_mog_params
-                        
-                        # Extract predicted means for compatibility
-                        # These will be used as the "best guess" values when needed
-                        weights_probs = F.softmax(lattice_mog_params["weights_logits"], dim=-1)
-                        
-                        # Calculate weighted means for each parameter
-                        # Shape: [batch_size, 6]
-                        weighted_means = torch.sum(
-                            weights_probs.unsqueeze(-2) * lattice_mog_params["means"],
-                            dim=-1
+
+                        clean_logits = torch.nan_to_num(
+                            lattice_mog_params["weights_logits"],
+                            nan=0.0,
+                            posinf=0.0,
+                            neginf=-1e5,
                         )
-                        
-                        # Split into lengths and angles for compatibility
+
+                        clean_logits = (
+                            clean_logits + torch.finfo(clean_logits.dtype).eps
+                        )
+
+                        weights_probs = F.softmax(clean_logits, dim=-1)
+
+                        clean_means = torch.nan_to_num(
+                            lattice_mog_params["means"], nan=0.0
+                        )
+
+                        weighted_means = torch.sum(
+                            weights_probs.unsqueeze(-2) * clean_means, dim=-1
+                        )
+
+                        weighted_means = torch.nan_to_num(weighted_means, nan=0.0)
+
                         lattice_lengths = bound_lattice_lengths(weighted_means[:, :3])
                         lattice_angles = bound_lattice_angles(weighted_means[:, 3:])
 
                         outputs["lattice_lengths"] = lattice_lengths
                         outputs["lattice_angles"] = lattice_angles
 
-                        # No discrete loss calculation for lattice parameters
-
                         # --- LATTICE REGRESSION LOSS ---
-                        # Check if we are training AND have ground truth
                         if (
                             self.training
                             and hasattr(self, "_lattice_ground_truth")
@@ -946,22 +1001,26 @@ class HierarchicalCrystalTransformer(nn.Module):
                         ):
                             gt_lengths = self._lattice_ground_truth["lengths"]
                             gt_angles = self._lattice_ground_truth["angles"]
-                            
-                            # Combine lengths and angles for full lattice parameters
+
                             # Shape: [batch_size, 6]
-                            gt_lattice_params = torch.cat([gt_lengths, gt_angles], dim=-1)
-                            
-                            # Always use negative log-likelihood loss with mixture of Gaussians
+                            gt_lattice_params = torch.cat(
+                                [gt_lengths, gt_angles], dim=-1
+                            )
+
                             try:
-                                # Get distribution from parameters
-                                mog_dist = self.lattice_mog_head.get_distribution(outputs["lattice_mog_params"])
-                                
-                                # Calculate negative log-likelihood
+                                mog_dist = self.lattice_mog_head.get_distribution(
+                                    outputs["lattice_mog_params"]
+                                )
+
                                 log_prob = mog_dist.log_prob(gt_lattice_params)
                                 lattice_regression_loss = -log_prob.mean()
-                                outputs["lattice_regression_loss"] = lattice_regression_loss
+                                outputs["lattice_regression_loss"] = (
+                                    lattice_regression_loss
+                                )
                             except Exception as e:
-                                print(f"Warning: Failed to calculate lattice MoG loss: {e}")
+                                print(
+                                    f"Warning: Failed to calculate lattice MoG loss: {e}"
+                                )
 
             if "atoms" in self.active_modules:
                 element_mask = safe_segment_ids == self.config.SEGMENT_ELEMENT
@@ -1022,7 +1081,7 @@ class HierarchicalCrystalTransformer(nn.Module):
                                 and self.config.use_combined_wyckoff_tokens
                                 and self.wyckoff_mult_head is not None
                             )
-                            
+
                             if use_combined:
                                 # Use combined Wyckoff-multiplicity head
                                 wyckoff_logits_i = self.wyckoff_mult_head(
@@ -1047,19 +1106,25 @@ class HierarchicalCrystalTransformer(nn.Module):
                                 if use_combined:
                                     # Create a basic mask for the current space group
                                     # Get allowed Wyckoff positions
-                                    allowed_wyckoff = self._sg_wyckoff_mapping.get_allowed_wyckoff_positions(space_group)
-                                    
+                                    allowed_wyckoff = self._sg_wyckoff_mapping.get_allowed_wyckoff_positions(
+                                        space_group
+                                    )
+
                                     # Create mask for combined tokens (only allows tokens for current space group)
                                     valid_mask = torch.zeros(
                                         self.config.num_wyckoff_mult_tokens,
                                         device=wyckoff_hidden.device,
-                                        dtype=torch.bool
+                                        dtype=torch.bool,
                                     )
-                                    
+
                                     # Set valid positions based on the tokens for this space group
-                                    offset = 3000 + (space_group * 100)  # Combined token range starts at 3000
-                                    for letter_idx, letter in enumerate(allowed_wyckoff):
-                                        idx = ord(letter) - ord('a')
+                                    offset = 3000 + (
+                                        space_group * 100
+                                    )  # Combined token range starts at 3000
+                                    for letter_idx, letter in enumerate(
+                                        allowed_wyckoff
+                                    ):
+                                        idx = ord(letter) - ord("a")
                                         if 0 <= idx < 26:
                                             token_id = offset + idx
                                             if token_id < valid_mask.size(0):
@@ -1075,7 +1140,10 @@ class HierarchicalCrystalTransformer(nn.Module):
                                     )
 
                                 # Apply the mask by setting invalid positions to -inf
-                                if valid_mask is not None and valid_mask.shape[0] <= wyckoff_logits_i.shape[1]:
+                                if (
+                                    valid_mask is not None
+                                    and valid_mask.shape[0] <= wyckoff_logits_i.shape[1]
+                                ):
                                     wyckoff_logits_i[:, ~valid_mask] = float("-inf")
 
                             all_wyckoff_logits.append(wyckoff_logits_i)
@@ -1086,7 +1154,7 @@ class HierarchicalCrystalTransformer(nn.Module):
 
                         if labels is not None:
                             wyckoff_labels = labels[wyckoff_mask]
-                            
+
                             # Determine which head was used (combined or regular)
                             is_using_combined = (
                                 hasattr(self.config, "use_combined_wyckoff_tokens")
@@ -1094,9 +1162,13 @@ class HierarchicalCrystalTransformer(nn.Module):
                                 and self.wyckoff_mult_head is not None
                                 and "wyckoff_mult_head" in str(wyckoff_logits.shape)
                             )
-                            
+
                             # Get the appropriate output feature size based on which head was used
-                            if is_using_combined and hasattr(self, "wyckoff_mult_head") and self.wyckoff_mult_head is not None:
+                            if (
+                                is_using_combined
+                                and hasattr(self, "wyckoff_mult_head")
+                                and self.wyckoff_mult_head is not None
+                            ):
                                 out_features = self.wyckoff_mult_head.out_features
                             else:
                                 out_features = self.wyckoff_head.out_features
@@ -1105,13 +1177,17 @@ class HierarchicalCrystalTransformer(nn.Module):
                             valid_labels = (wyckoff_labels >= 0) & (
                                 wyckoff_labels < out_features
                             ) | (wyckoff_labels == -100)
-                            
+
                             if not torch.all(valid_labels):
                                 # Handle case where labels might be for the wrong head type
-                                if is_using_combined and torch.any(wyckoff_labels >= 3000):
+                                if is_using_combined and torch.any(
+                                    wyckoff_labels >= 3000
+                                ):
                                     # Labels appear to be for combined tokens, keep them
                                     pass
-                                elif not is_using_combined and torch.any(wyckoff_labels < 3000):
+                                elif not is_using_combined and torch.any(
+                                    wyckoff_labels < 3000
+                                ):
                                     # Labels appear to be for regular tokens, keep them
                                     pass
                                 else:
@@ -1119,7 +1195,9 @@ class HierarchicalCrystalTransformer(nn.Module):
                                     wyckoff_labels = torch.where(
                                         valid_labels,
                                         wyckoff_labels,
-                                        torch.tensor(-100, device=wyckoff_labels.device),
+                                        torch.tensor(
+                                            -100, device=wyckoff_labels.device
+                                        ),
                                     )
 
                             if wyckoff_logits.size(0) == wyckoff_labels.size(0):
@@ -1177,24 +1255,56 @@ class HierarchicalCrystalTransformer(nn.Module):
                                 if slice_end <= coordinate_hidden.size(0):
                                     # Always use MoVM for coordinate predictions
                                     coord_movm_params = self.fractional_coord_movm_head(
-                                        coordinate_hidden[:slice_end:3]  # Get hidden state for each atom
+                                        coordinate_hidden[
+                                            :slice_end:3
+                                        ]  # Get hidden state for each atom
                                     )
                                     outputs["coord_movm_params"] = coord_movm_params
-                                    
-                                    # Calculate weighted means as "best guess" values for compatibility
-                                    weights_probs = F.softmax(coord_movm_params["weights_logits"], dim=-1)
-                                    
+
+                                    # Calculate weighted means as "best guess" values with enhanced numerical stability
+                                    # Clean logits to avoid NaN/Inf
+                                    clean_logits = torch.nan_to_num(
+                                        coord_movm_params["weights_logits"],
+                                        nan=0.0,
+                                        posinf=0.0,
+                                        neginf=-1e5,
+                                    )
+
+                                    # Add small epsilon to avoid numerical issues
+                                    clean_logits = (
+                                        clean_logits
+                                        + torch.finfo(clean_logits.dtype).eps
+                                    )
+
+                                    # Apply softmax to get valid probabilities
+                                    weights_probs = F.softmax(clean_logits, dim=-1)
+
+                                    # Clean means
+                                    clean_means = torch.nan_to_num(
+                                        coord_movm_params["means"], nan=0.5
+                                    )  # Default to middle of [0,1) range
+
                                     # Calculate weighted means for each coordinate
                                     # Shape: [num_atoms, 3]
                                     weighted_means = torch.sum(
-                                        weights_probs.unsqueeze(-2) * coord_movm_params["means"],
-                                        dim=-1
+                                        weights_probs.unsqueeze(-2) * clean_means,
+                                        dim=-1,
                                     )
-                                    
+
+                                    # Final safety check for NaN/Inf values
+                                    weighted_means = torch.nan_to_num(
+                                        weighted_means, nan=0.5
+                                    )  # Default to middle of [0,1) range
+
                                     # Bound coordinates to [0, 1)
-                                    from .mixture_density import bound_mixture_fractional_coords
-                                    fractional_coords = bound_mixture_fractional_coords(weighted_means)
-                                        
+                                    from .mixture_density import (
+                                        bound_mixture_fractional_coords,
+                                    )
+
+                                    fractional_coords = bound_mixture_fractional_coords(
+                                        weighted_means
+                                    )
+
                                     outputs["fractional_coords"] = fractional_coords
 
                                     # Check if we are training AND have ground truth
@@ -1207,18 +1317,24 @@ class HierarchicalCrystalTransformer(nn.Module):
                                             gt_coords = self._coordinate_ground_truth[
                                                 "fractional_coords"
                                             ]
-                                            
+
                                             # Always use negative log-likelihood loss with mixture of wrapped normals
                                             try:
                                                 # Get distribution from parameters
-                                                movm_dist = self.fractional_coord_movm_head.get_distribution(outputs["coord_movm_params"])
-                                                
+                                                movm_dist = self.fractional_coord_movm_head.get_distribution(
+                                                    outputs["coord_movm_params"]
+                                                )
+
                                                 # Calculate negative log-likelihood
                                                 log_prob = movm_dist.log_prob(gt_coords)
                                                 coord_regression_loss = -log_prob.mean()
-                                                outputs["coord_regression_loss"] = coord_regression_loss
+                                                outputs["coord_regression_loss"] = (
+                                                    coord_regression_loss
+                                                )
                                             except Exception as e:
-                                                print(f"Warning: Failed to calculate coordinate MoVM loss: {e}")
+                                                print(
+                                                    f"Warning: Failed to calculate coordinate MoVM loss: {e}"
+                                                )
 
                                         except Exception as e:
                                             print(
@@ -1259,15 +1375,52 @@ class HierarchicalCrystalTransformer(nn.Module):
                     # Use the last token's hidden state for prediction
                     last_hidden = hidden_states[:, -1]
 
-                    # Generate lattice predictions using Mixture of Gaussians
-                    # Generate parameters for mixture of Gaussians
-                    lattice_mog_params = self.lattice_mog_head(last_hidden)
-                    outputs["lattice_mog_params"] = lattice_mog_params
-                    
-                    # Get distribution and sample from it
-                    mog_dist = self.lattice_mog_head.get_distribution(lattice_mog_params)
-                    lattice_samples = mog_dist.sample()
-                    
+                    # Check if we should try mixture density network or bypass completely
+                    has_nan = False
+
+                    # First try to generate parameters
+                    try:
+                        lattice_mog_params = self.lattice_mog_head(last_hidden)
+                        outputs["lattice_mog_params"] = lattice_mog_params
+
+                        # Check for NaN values
+                        for key, tensor in lattice_mog_params.items():
+                            if isinstance(tensor, torch.Tensor) and (
+                                torch.isnan(tensor).any() or torch.isinf(tensor).any()
+                            ):
+                                print(
+                                    f"Warning: NaN/Inf detected in lattice {key} with shape {tensor.shape}"
+                                )
+                                has_nan = True
+                                break
+                    except Exception as e:
+                        print(f"Warning: Error generating lattice parameters: {e}")
+                        has_nan = True
+
+                    # If no NaNs and mixture density network seems valid, use it
+                    if not has_nan:
+                        try:
+                            # Get distribution and sample from it
+                            mog_dist = self.lattice_mog_head.get_distribution(
+                                lattice_mog_params
+                            )
+                            lattice_samples = mog_dist.sample()
+                        except Exception as e:
+                            print(f"Warning: Error during lattice sampling: {e}")
+                            has_nan = True
+
+                    # Use direct fallback values if any problems occurred
+                    if has_nan:
+                        print("Using direct fallback for lattice generation")
+                        # Create reasonable lattice parameter values
+                        # Size: [batch_size, 6] for [a, b, c, alpha, beta, gamma]
+                        lattice_samples = torch.zeros(
+                            (last_hidden.size(0), 6), device=last_hidden.device
+                        )
+                        # Set reasonable defaults: a,b,c,alpha,beta,gamma
+                        lattice_samples[:, :3] = 5.0  # lengths a,b,c
+                        lattice_samples[:, 3:6] = 90.0  # angles alpha,beta,gamma
+
                     # Split samples into lengths and angles for compatibility
                     lattice_lengths = bound_lattice_lengths(lattice_samples[:, :3])
                     lattice_angles = bound_lattice_angles(lattice_samples[:, 3:])
@@ -1283,19 +1436,89 @@ class HierarchicalCrystalTransformer(nn.Module):
                     # Use the last token's hidden state
                     last_hidden = hidden_states[:, -1].unsqueeze(0)
 
-                    # Generate coordinate predictions using Mixture of Wrapped Normals
-                    # Generate parameters for mixture of wrapped normals
-                    coord_movm_params = self.fractional_coord_movm_head(last_hidden)
-                    outputs["coord_movm_params"] = coord_movm_params
-                    
-                    # Get distribution and sample from it
-                    movm_dist = self.fractional_coord_movm_head.get_distribution(coord_movm_params)
-                    coord_samples = movm_dist.sample()
-                    
+                    # Check if we should try mixture density network or bypass completely
+                    has_nan = False
+
+                    # First try to generate parameters
+                    try:
+                        coord_movm_params = self.fractional_coord_movm_head(last_hidden)
+                        outputs["coord_movm_params"] = coord_movm_params
+
+                        # Check for NaN values
+                        for key, tensor in coord_movm_params.items():
+                            if isinstance(tensor, torch.Tensor) and (
+                                torch.isnan(tensor).any() or torch.isinf(tensor).any()
+                            ):
+                                print(
+                                    f"Warning: NaN/Inf detected in coordinate {key} with shape {tensor.shape}"
+                                )
+                                has_nan = True
+                                break
+                    except Exception as e:
+                        print(f"Warning: Error generating coordinate parameters: {e}")
+                        has_nan = True
+
+                    # If no NaNs and mixture density network seems valid, use it
+                    if not has_nan:
+                        try:
+                            # Get distribution and sample from it
+                            movm_dist = (
+                                self.fractional_coord_movm_head.get_distribution(
+                                    coord_movm_params
+                                )
+                            )
+                            coord_samples = movm_dist.sample()
+                        except Exception as e:
+                            print(f"Warning: Error during coordinate sampling: {e}")
+                            has_nan = True
+
+                    # Use direct fallback values if any problems occurred
+                    if has_nan:
+                        print("Using direct fallback for coordinate generation")
+                        # Create reasonable coordinate values
+                        # Size: [batch_size, 3] for [x, y, z]
+                        coord_samples = 0.5 * torch.ones(
+                            (last_hidden.size(0), 3), device=last_hidden.device
+                        )
+
                     # Ensure coordinates are in [0, 1) range
                     from .mixture_density import bound_mixture_fractional_coords
+
                     fractional_coords = bound_mixture_fractional_coords(coord_samples)
-                        
+
+                    # Ensure coordiates have correct shape for decoding
+                    # We expect a 2D tensor with shape [batch_size, 3] for a single atom
+                    # or [num_atoms, 3] for multiple atoms
+                    if fractional_coords.dim() > 2:
+                        print(
+                            f"Unexpected fractional_coords shape: {fractional_coords.shape}, flattening"
+                        )
+                        try:
+                            # Try to reshape to [num_atoms, 3]
+                            # Calculate total number of atoms
+                            total_elements = fractional_coords.numel()
+                            if total_elements % 3 == 0:
+                                num_atoms = total_elements // 3
+                                fractional_coords = fractional_coords.reshape(
+                                    num_atoms, 3
+                                )
+                            else:
+                                print(
+                                    f"Warning: Can't reshape coordinates tensor of size {total_elements} to [..., 3]"
+                                )
+                                # Fall back to a default shape
+                                fractional_coords = (
+                                    torch.ones((1, 3), device=fractional_coords.device)
+                                    * 0.5
+                                )
+                        except Exception as e:
+                            print(f"Error reshaping coordinates: {e}")
+                            # Provide a valid fallback
+                            fractional_coords = (
+                                torch.ones((1, 3), device=fractional_coords.device)
+                                * 0.5
+                            )
+
                     outputs["fractional_coords"] = fractional_coords
 
         return outputs
@@ -1341,7 +1564,11 @@ class HierarchicalCrystalTransformer(nn.Module):
             )
 
         # Always use continuous predictions
-        continuous_predictions = {"lattice_lengths": [], "lattice_angles": [], "fractional_coords": []}
+        continuous_predictions = {
+            "lattice_lengths": [],
+            "lattice_angles": [],
+            "fractional_coords": [],
+        }
 
         if verbose:
             print(f"Active modules: {self.active_modules}")

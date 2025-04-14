@@ -1059,11 +1059,34 @@ class HierarchicalCrystalTransformerModule(LightningModule):
 
                 # Update atoms with continuous coordinates
                 if len(atoms) > 0:
-                    # Prepare coordinates
+                    # Prepare coordinates with robust shape handling
                     if coords_tensor.dim() == 1:
-                        coords_tensor = coords_tensor.view(
-                            -1, 3
-                        )  # Reshape to (num_atoms, 3)
+                        # Handle flat tensor (num_atoms * 3)
+                        if coords_tensor.size(0) % 3 == 0:
+                            coords_tensor = coords_tensor.view(-1, 3)  # Reshape to (num_atoms, 3)
+                        else:
+                            print(f"Warning: Coordinates tensor size {coords_tensor.size(0)} is not divisible by 3")
+                            # Create a default set of coordinates
+                            coords_tensor = torch.zeros((len(atoms), 3), device=coords_tensor.device) + 0.5
+                    elif coords_tensor.dim() > 2:
+                        # Handle unexpected higher-dimensional tensor
+                        print(f"Warning: Unexpected coordinate tensor shape: {coords_tensor.shape}")
+                        # Flatten to 2D by averaging across extra dimensions if possible
+                        if coords_tensor.size(-1) == 3:
+                            # Average across all dims except the last
+                            orig_shape = coords_tensor.shape
+                            new_shape = (-1, 3)
+                            try:
+                                coords_tensor = coords_tensor.reshape(new_shape)
+                            except RuntimeError as e:
+                                print(f"Error reshaping coordinates: {e}")
+                                print(f"Original shape: {orig_shape}, Attempted: {new_shape}, Total elements: {coords_tensor.numel()}")
+                                # Fall back to zeros
+                                coords_tensor = torch.zeros((len(atoms), 3), device=coords_tensor.device) + 0.5
+                        else:
+                            # Can't handle this shape
+                            print(f"Can't process coordinate tensor with shape {coords_tensor.shape}")
+                            coords_tensor = torch.zeros((len(atoms), 3), device=coords_tensor.device) + 0.5
 
                     # Limit to the number of atoms we have
                     num_atoms = min(len(atoms), coords_tensor.size(0))

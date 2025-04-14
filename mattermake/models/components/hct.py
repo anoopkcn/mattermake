@@ -52,7 +52,7 @@ class HierarchicalCrystalTransformer(
             hasattr(config, "apply_wyckoff_constraints")
             and config.apply_wyckoff_constraints
         ):
-            self.sg_wyckoff_mapping = SpaceGroupWyckoffMapping()
+            self._sg_wyckoff_mapping = SpaceGroupWyckoffMapping()
 
         # Hierarchical encoders
         self.composition_encoder = CompositionEncoder(config)

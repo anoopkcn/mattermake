@@ -1,3 +1,4 @@
+import sys
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -27,7 +28,7 @@ class LossCalculationMixin:
                 outputs, labels, segment_ids, hidden_states
             )
         except Exception as e:
-            print(f"Warning: Error in loss calculation: {e}")
+            print(f"Warning: Error in loss calculation: {e}", file=sys.stderr)
             if "loss" not in outputs:
                 outputs["loss"] = torch.tensor(
                     0.0, device=hidden_states.device, requires_grad=True

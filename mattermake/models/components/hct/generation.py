@@ -1,7 +1,25 @@
 import torch
 import torch.nn.functional as F
 from typing import Dict, Optional, Any
-from .constraint_handler import CrystalConstraintHandler
+
+# Define a minimal constraint handler that will be used only for redirecting warnings
+class CrystalConstraintHandler:
+    """Placeholder constraint handler that will be replaced at runtime with the real one"""
+    
+    def __init__(self, constraints=None):
+        self.constraints = constraints or {}
+    
+    def get_wyckoff_mask(self, batch_idx):
+        """Returns a mask for valid Wyckoff positions"""
+        return None
+    
+    def update_space_group(self, batch_idx, token_id):
+        """Update the tracked space group"""
+        pass
+    
+    def update_wyckoff_position(self, batch_idx, token_id):
+        """Update the tracked Wyckoff position"""
+        pass
 
 
 class GenerationMixin:

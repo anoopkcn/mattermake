@@ -1,3 +1,4 @@
+import sys
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -296,7 +297,7 @@ class HierarchicalCrystalTransformer(
                         outputs["lattice_lengths"] = lattice_lengths
                         outputs["lattice_angles"] = lattice_angles
                     except Exception as e:
-                        print(f"Warning: Error in lattice parameter calculation: {e}")
+                        print(f"Warning: Error in lattice parameter calculation: {e}", file=sys.stderr)
 
         if "atoms" in self.active_modules:
             element_mask = segment_ids == self.config.SEGMENT_ELEMENT

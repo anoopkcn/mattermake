@@ -61,6 +61,7 @@ class GenerationMixin:
         # Initialize KV caches for all transformer layers if KV caching is enabled
         kv_caches = {} if use_kv_cache else None
 
+        step = 0  # Add step counter
         while True:
             # Make sure all modules are active during generation
             if hasattr(self, "active_modules"):
@@ -200,6 +201,20 @@ class GenerationMixin:
             attention_mask = torch.cat(
                 [attention_mask, attention_mask.new_ones((batch_size, 1))], dim=-1
             )
+
+            # --- DEBUG OUTPUT ---
+            if verbose:
+                idx_to_token = None
+                if hasattr(self, 'tokenizer_config') and self.tokenizer_config and 'idx_to_token' in self.tokenizer_config:
+                    idx_to_token = self.tokenizer_config['idx_to_token']
+                print(f"[GENERATION][Step {step}] Batch size: {batch_size}")
+                for i in range(batch_size):
+                    token_id = int(generated_ids[i, -1].item())
+                    segment_id = int(generated_segments[i, -1].item())
+                    token_name = idx_to_token.get(token_id, str(token_id)) if idx_to_token else str(token_id)
+                    print(f"  Sample {i}: Token ID: {token_id}, Segment ID: {segment_id}, Token: {token_name}")
+            step += 1
+            # --- END DEBUG OUTPUT ---
 
             # Check if generation is finished
             if eos_token_id is not None:

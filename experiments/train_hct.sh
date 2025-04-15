@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --account=westai0036
-#SBATCH --nodes=4
+#SBATCH --account=hai_matbind
+#SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
-#SBATCH --time=24:00:00
-#SBATCH --partition=dc-hwai
+#SBATCH --time=2:00:00
+#SBATCH --partition=develbooster
 #SBATCH --output=/p/project1/hai_solaihack/chandran1/mattermake/experiments/train_hct_%j.out
 #SBATCH --error=/p/project1/hai_solaihack/chandran1/mattermake/experiments/train_hct_%j.err
 

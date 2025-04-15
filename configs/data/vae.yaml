@@ -1,5 +1,0 @@
-_target_: mattermake.data.crystal_datamodule.CrystalDataModule
-
-data_dir: "${paths.data_dir}/structures"
-batch_size: 32
-num_workers: 4

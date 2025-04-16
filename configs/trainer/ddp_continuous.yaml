@@ -1,10 +1,12 @@
 defaults:
   - default
 
-strategy: ddp_find_unused_parameters_true
+strategy:
+  _target_: lightning.pytorch.strategies.DDPStrategy
+  find_unused_parameters: true
 
 accelerator: gpu
-devices: 4
+devices: 2  # Updated to match available hardware
 # Set to your actual node count
-num_nodes: 2
+num_nodes: 1  # Using a single node
 sync_batchnorm: True

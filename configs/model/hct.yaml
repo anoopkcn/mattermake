@@ -26,6 +26,11 @@ dropout: 0.1
 condition_lattice_on_sg: true
 
 # --- Optimizer & Loss Params ---
+learning_rate: 1e-4
+weight_decay: 0.01
+
+# Keep optimizer config for reference, but it's not used directly
+# since the model has its own configure_optimizers method
 optimizer:
   _target_: torch.optim.AdamW
   _partial_: true

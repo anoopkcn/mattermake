@@ -1,0 +1,29 @@
+# HCT data configuration
+_target_: mattermake.data.hct_datamodule.HCTDataModule
+
+# Data paths
+processed_data_dir: ${paths.data_dir}/hct_data_20k
+
+# DataLoader parameters
+batch_size: 32
+num_workers: 4
+pin_memory: true
+
+# Directory structure
+train_subdir: "train"
+val_subdir: "val"
+test_subdir: "test"
+file_extension: ".pt"
+
+# Token configuration
+add_atom_start_end_tokens: true
+atom_start_token_idx: -1  # Default START = -1
+atom_end_token_idx: -2    # Default END = -2
+
+# Vocabulary sizes
+element_vocab_size: 100    # Adjust based on actual elements + special tokens
+spacegroup_vocab_size: 231  # 1-230 + padding token
+
+# Dataset options
+dataset_kwargs:
+  preload_data: false  # Set to true to load all data into memory at initialization

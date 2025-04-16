@@ -1,5 +1,3 @@
-# YAML config for training HCT model
-
 # @package _global_
 
 # specify default task name that will be used to name logging directories
@@ -23,11 +21,11 @@ seed: 42
 # default config choices
 defaults:
   - _self_
-  - data: crystal
+  - data: hct
   - model: hct
   - callbacks: default
   - logger: wandb
-  - trainer: gpu
+  - trainer: ddp_continuous
   - paths: default
   - extras: default
   - hydra: default

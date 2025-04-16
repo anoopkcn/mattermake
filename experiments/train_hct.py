@@ -5,6 +5,7 @@ import lightning as L
 import torch
 from lightning import Callback, Trainer
 from omegaconf import DictConfig
+import rootutils
 
 from mattermake.models.hct_module import HierarchicalCrystalTransformer
 from mattermake.utils import (
@@ -16,6 +17,8 @@ from mattermake.utils import (
     log_hyperparameters,
     task_wrapper,
 )
+
+rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 log = RankedLogger(__name__, rank_zero_only=True)
 

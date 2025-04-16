@@ -3,12 +3,12 @@
 # HCT experiment configuration
 
 defaults:
-  - override /data: crystal
+  - override /data: hct
   - override /model: hct
   - override /callbacks: default
   - override /trainer: gpu
 
-tags: ["hct", "crystal-transformer"]
+tags: ["hct", "hc-transformer"]
 
 seed: 42
 

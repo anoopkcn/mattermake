@@ -169,6 +169,9 @@ class HierarchicalCrystalTransformerBase(nn.Module):
         end_embed_idx = (
             self.type_end_embed_idx if is_type else self.wyckoff_end_embed_idx
         )
+        
+        # Get the maximum valid index for this type of token
+        max_valid_idx = self._max_element_idx if is_type else self._max_wyckoff_idx
 
         mapped_indices = indices.clone()
         # Map special tokens first
@@ -176,9 +179,11 @@ class HierarchicalCrystalTransformerBase(nn.Module):
         mapped_indices[indices == self.hparams['end_idx']] = end_embed_idx
         # Ensure PAD remains 0
         mapped_indices[indices == self.hparams['pad_idx']] = self.hparams['pad_idx']
-        # Ensure valid indices (>=1) remain unchanged
+        # Handle valid indices (>=1) - clamp to ensure they're within bounds
         valid_mask = indices >= 1
-        mapped_indices[valid_mask] = indices[valid_mask]
+        # Clamp the indices to be at most max_valid_idx to prevent out-of-bounds access
+        safe_indices = torch.clamp(indices[valid_mask], max=max_valid_idx)
+        mapped_indices[valid_mask] = safe_indices
         return mapped_indices
 
     def forward(self, batch: Dict[str, Any]) -> Dict[str, Any]:
@@ -290,7 +295,8 @@ class HierarchicalCrystalTransformerBase(nn.Module):
         tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt_len).to(
             self.device
         )  # Causal mask (T-1, T-1)
-        tgt_key_padding_mask = ~atom_mask_input  # True where padded (b, T-1)
+        # Convert boolean mask to the same dtype as tgt_mask to avoid warning
+        tgt_key_padding_mask = (~atom_mask_input).to(tgt_mask.dtype)  # Float tensor (True where padded) (b, T-1)
         memory_key_padding_mask = None  # Context length is fixed
 
         # Run Atom Decoder

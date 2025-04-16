@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import pytorch_lightning as pl
+from lightning.pytorch import LightningModule
 import math
 from torch.distributions import VonMises, Normal
 from typing import Dict, Any
@@ -12,7 +12,7 @@ from mattermake.utils import RankedLogger
 log = RankedLogger(__name__, rank_zero_only=True)
 
 
-class HierarchicalCrystalTransformer(pl.LightningModule):
+class HierarchicalCrystalTransformer(LightningModule):
     """
     Hierarchical Crystal Transformer with dedicated encoders/projectors,
     cross-attention for atom decoding, and distributional outputs for
@@ -59,7 +59,7 @@ class HierarchicalCrystalTransformer(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters(logger=False)
         log.info("Initializing HierarchicalCrystalTransformer")
-        
+
         # Initialize the base transformer model
         log.info(f"Creating base model with d_model={d_model}, nhead={nhead}")
         self.model = HierarchicalCrystalTransformerBase(
@@ -80,7 +80,7 @@ class HierarchicalCrystalTransformer(pl.LightningModule):
             dropout=dropout,
             condition_lattice_on_sg=condition_lattice_on_sg,
             eps=eps,
-            **kwargs
+            **kwargs,
         )
 
         # --- Loss Functions (Modified for NLL) ---
@@ -251,7 +251,9 @@ class HierarchicalCrystalTransformer(pl.LightningModule):
 
     # --- Optimizer ---
     def configure_optimizers(self) -> optim.Optimizer:
-        log.info(f"Configuring optimizer with lr={self.hparams.learning_rate}, weight_decay={self.hparams.weight_decay}")
+        log.info(
+            f"Configuring optimizer with lr={self.hparams.learning_rate}, weight_decay={self.hparams.weight_decay}"
+        )
         optimizer = optim.AdamW(
             self.parameters(),
             lr=self.hparams.learning_rate,
@@ -277,8 +279,12 @@ class HierarchicalCrystalTransformer(pl.LightningModule):
         # top_k / top_p could be added here
     ) -> Dict[str, Any]:
         """Autoregressive generation (sampling)."""
-        log.info(f"Generating crystal structure with temperature={temperature}, max_atoms={max_atoms}")
-        log.info(f"Sampling modes: SG={sg_sampling_mode}, lattice={lattice_sampling_mode}, atoms={atom_discrete_sampling_mode}, coords={coord_sampling_mode}")
+        log.info(
+            f"Generating crystal structure with temperature={temperature}, max_atoms={max_atoms}"
+        )
+        log.info(
+            f"Sampling modes: SG={sg_sampling_mode}, lattice={lattice_sampling_mode}, atoms={atom_discrete_sampling_mode}, coords={coord_sampling_mode}"
+        )
         return self.model.generate(
             composition=composition,
             max_atoms=max_atoms,

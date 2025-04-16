@@ -272,6 +272,21 @@ class HierarchicalCrystalTransformerBase(nn.Module):
 
         # Prepare Masks for Atom Decoder
         tgt_len = atom_decoder_input.size(1)  # T-1
+        
+        # Check if we have a valid sequence length
+        if tgt_len <= 0:
+            # Handle the case where sequence length is invalid
+            batch_size = atom_decoder_input.size(0)
+            return {
+                "sg_logits": self.sg_head(comp_memory.squeeze(1)),  # Still provide SG logits
+                "lattice_mean": torch.zeros((batch_size, 6), device=self.device),
+                "lattice_log_var": torch.zeros((batch_size, 6), device=self.device),
+                "type_logits": torch.zeros((batch_size, 0, self.effective_type_vocab_size), device=self.device),
+                "wyckoff_logits": torch.zeros((batch_size, 0, self.effective_wyckoff_vocab_size), device=self.device),
+                "coord_loc": torch.zeros((batch_size, 0, 3), device=self.device),
+                "coord_concentration": torch.zeros((batch_size, 0, 3), device=self.device),
+            }
+        
         tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt_len).to(
             self.device
         )  # Causal mask (T-1, T-1)
@@ -418,6 +433,17 @@ class HierarchicalCrystalTransformerBase(nn.Module):
             ).permute(1, 0, 2)
 
             current_len = atom_decoder_input_pos.size(1)
+            # Check for valid sequence length
+            if current_len <= 0:
+                # If we somehow get an empty sequence, just return early with empty results
+                return {
+                    "predicted_sg": predicted_sg_num.item(),
+                    "sampled_lattice": sampled_or_mean_lattice.squeeze(0).cpu().numpy(),
+                    "generated_types": [],
+                    "generated_wyckoffs": [],
+                    "generated_coords": [],  # fractional [0, 1)
+                }
+                
             tgt_mask = nn.Transformer.generate_square_subsequent_mask(current_len).to(
                 device
             )

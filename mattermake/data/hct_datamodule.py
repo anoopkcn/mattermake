@@ -1,4 +1,4 @@
-import pytorch_lightning as pl
+from lightning.pytorch import LightningModule
 import torch
 from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
@@ -78,7 +78,7 @@ def hct_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-class HCTDataModule(pl.LightningDataModule):
+class HCTDataModule(LightningModule):
     """
     PyTorch Lightning DataModule for HCT using PAD=0, START=-1, END=-2 scheme.
 

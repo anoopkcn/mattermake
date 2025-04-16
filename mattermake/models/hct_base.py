@@ -1,13 +1,7 @@
 import torch
 import torch.nn as nn
-import torch.optim as optim
-import pytorch_lightning as pl
 import math
-from torch.distributions import (
-    VonMises,
-    Normal,
-    Categorical,
-)
+from torch.distributions import VonMises, Normal, Categorical
 from typing import Dict, Any
 
 
@@ -33,13 +27,13 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
-class HierarchicalCrystalTransformer(pl.LightningModule):
+class HierarchicalCrystalTransformerBase(nn.Module):
     """
-    Hierarchical Crystal Transformer with dedicated encoders/projectors,
+    Base class for Hierarchical Crystal Transformer with dedicated encoders/projectors,
     cross-attention for atom decoding, and distributional outputs for
     lattice (Normal) and coordinates (Von Mises). Handles space group
     as a categorical distribution.
-
+    
     Assumes PAD=0, START=-1, END=-2 token scheme and valid indices >= 1
     in the preprocessed data.
     """
@@ -66,40 +60,34 @@ class HierarchicalCrystalTransformer(pl.LightningModule):
         dropout: float = 0.1,
         # --- Control Flags ---
         condition_lattice_on_sg: bool = True,
-        # --- Optimizer & Loss Params ---
-        learning_rate: float = 1e-4,
-        weight_decay: float = 0.01,
-        sg_loss_weight: float = 1.0,
-        lattice_loss_weight: float = 1.0,  # NLL weight
-        type_loss_weight: float = 1.0,
-        wyckoff_loss_weight: float = 1.0,
-        coord_loss_weight: float = 1.0,  # NLL weight
+        # --- Additional Params ---
         eps: float = 1e-6,  # Small value for stability (e.g., variance)
         **kwargs,
     ):
         super().__init__()
-        self.save_hyperparameters(logger=False)
+        self.hparams = {k: v for k, v in locals().items() if k != 'self' and k != 'kwargs' and k != '__class__'}
+        self.hparams.update(kwargs)
         self.eps = eps  # Store eps
 
         # --- Input Processing / Encoders / Projectors ---
 
         # 1. Composition Encoder
-        self.comp_processor = nn.Linear(self.hparams.element_vocab_size, d_model)
+        self.comp_processor = nn.Linear(self.hparams['element_vocab_size'], d_model)
         comp_encoder_layer = nn.TransformerEncoderLayer(
             d_model, nhead, dim_feedforward, dropout, batch_first=True
         )
         self.comp_encoder = nn.TransformerEncoder(
-            comp_encoder_layer, self.hparams.num_comp_encoder_layers
+            comp_encoder_layer, self.hparams['num_comp_encoder_layers']
         )
 
         # 2. Space Group Representation
         # Embedding for SG (input 0-230 -> index 0-230)
         # Note: Ensure sg_vocab_size includes an index for 0 if used/needed.
         self.sg_embedding = nn.Embedding(
-            self.hparams.sg_vocab_size, self.hparams.sg_embed_dim
+            self.hparams['sg_vocab_size'], self.hparams['sg_embed_dim']
         )
         # Project SG embedding to d_model
-        self.sg_projector = nn.Linear(self.hparams.sg_embed_dim, d_model)
+        self.sg_projector = nn.Linear(self.hparams['sg_embed_dim'], d_model)
 
         # 3. Lattice Representation
         # Project 6 lattice params to d_model
@@ -109,9 +97,9 @@ class HierarchicalCrystalTransformer(pl.LightningModule):
         # Calculate effective vocab sizes for atom embeddings including PAD, START, END
         # Assumes element_vocab_size = max_Z, wyckoff_vocab_size = max_valid_idx + 1
         # These calculations need careful verification based on actual data range & config values
-        self._max_element_idx = self.hparams.element_vocab_size  # Max Z (e.g., 100)
+        self._max_element_idx = self.hparams['element_vocab_size']  # Max Z (e.g., 100)
         self._max_wyckoff_idx = (
-            self.hparams.wyckoff_vocab_size - 1
+            self.hparams['wyckoff_vocab_size'] - 1
         )  # Max valid index (e.g., 199)
         # Map: PAD(0)->0, Valid(1..N)->1..N, START(-1)->N+1, END(-2)->N+2
         self.effective_type_vocab_size = (
@@ -128,17 +116,17 @@ class HierarchicalCrystalTransformer(pl.LightningModule):
 
         self.type_embedding = nn.Embedding(
             self.effective_type_vocab_size,
-            self.hparams.type_embed_dim,
-            padding_idx=self.hparams.pad_idx,
+            self.hparams['type_embed_dim'],
+            padding_idx=self.hparams['pad_idx'],
         )
         self.wyckoff_embedding = nn.Embedding(
             self.effective_wyckoff_vocab_size,
-            self.hparams.wyckoff_embed_dim,
-            padding_idx=self.hparams.pad_idx,
+            self.hparams['wyckoff_embed_dim'],
+            padding_idx=self.hparams['pad_idx'],
         )
 
         # Combine atom step info (type emb + wyckoff emb + coords) and project
-        atom_step_dim = self.hparams.type_embed_dim + self.hparams.wyckoff_embed_dim + 3
+        atom_step_dim = self.hparams['type_embed_dim'] + self.hparams['wyckoff_embed_dim'] + 3
         self.atom_input_proj = nn.Linear(atom_step_dim, d_model)
         self.atom_pos_encoder = PositionalEncoding(d_model, dropout)
 
@@ -147,16 +135,16 @@ class HierarchicalCrystalTransformer(pl.LightningModule):
             d_model, nhead, dim_feedforward, dropout, batch_first=True
         )
         self.atom_decoder = nn.TransformerDecoder(
-            atom_decoder_layer, self.hparams.num_atom_decoder_layers
+            atom_decoder_layer, self.hparams['num_atom_decoder_layers']
         )
 
         # --- Prediction Heads (Modified for Distributions) ---
         # Predict SG logits (index 0-230 or 0-229?) -> Map to 1-230
-        self.sg_head = nn.Linear(d_model, self.hparams.sg_vocab_size)
+        self.sg_head = nn.Linear(d_model, self.hparams['sg_vocab_size'])
 
         # Lattice Head: Predicts 6 means and 6 log_vars for diagonal Normal
         lattice_cond_dim = d_model
-        if self.hparams.condition_lattice_on_sg:
+        if self.hparams['condition_lattice_on_sg']:
             # Context dim needs careful checking depending on how context is combined (cat/add)
             lattice_cond_dim += d_model  # Assuming concatenation for simplicity
             # Alternative: Use cross attention layer before the head
@@ -170,15 +158,7 @@ class HierarchicalCrystalTransformer(pl.LightningModule):
         self.wyckoff_head = nn.Linear(d_model, self.effective_wyckoff_vocab_size)
         # Coord Head: Predicts loc and concentration for Von Mises per x, y, z
         self.coord_head = nn.Linear(d_model, 3 * 2)  # (loc, concentration) per dim
-
-        # --- Loss Functions (Modified for NLL) ---
-        # Note: Target mapping for SG loss needs to align with sg_head output range
-        self.sg_loss = nn.CrossEntropyLoss()  # Assumes head predicts logits for 0..N
-        # Lattice/Coord loss is now NLL, calculated in training_step
-        self.type_loss = nn.CrossEntropyLoss(ignore_index=self.hparams.pad_idx)
-        self.wyckoff_loss = nn.CrossEntropyLoss(ignore_index=self.hparams.pad_idx)
-        # Coord loss needs target coord transformation: [0,1) -> [-pi, pi)
-
+        
     def _map_indices_for_embedding(
         self, indices: torch.Tensor, is_type: bool
     ) -> torch.Tensor:
@@ -192,10 +172,10 @@ class HierarchicalCrystalTransformer(pl.LightningModule):
 
         mapped_indices = indices.clone()
         # Map special tokens first
-        mapped_indices[indices == self.hparams.start_idx] = start_embed_idx
-        mapped_indices[indices == self.hparams.end_idx] = end_embed_idx
+        mapped_indices[indices == self.hparams['start_idx']] = start_embed_idx
+        mapped_indices[indices == self.hparams['end_idx']] = end_embed_idx
         # Ensure PAD remains 0
-        mapped_indices[indices == self.hparams.pad_idx] = self.hparams.pad_idx
+        mapped_indices[indices == self.hparams['pad_idx']] = self.hparams['pad_idx']
         # Ensure valid indices (>=1) remain unchanged
         valid_mask = indices >= 1
         mapped_indices[valid_mask] = indices[valid_mask]
@@ -231,7 +211,7 @@ class HierarchicalCrystalTransformer(pl.LightningModule):
 
         # --- Stage 3: Lattice Prediction & Encoding ---
         # Prepare context for lattice prediction
-        if self.hparams.condition_lattice_on_sg:
+        if self.hparams['condition_lattice_on_sg']:
             # Combine Comp and SG context
             # Simple concatenation along feature dim for linear head
             combined_context_features = torch.cat(
@@ -333,156 +313,10 @@ class HierarchicalCrystalTransformer(pl.LightningModule):
         }
         return predictions
 
-    def calculate_loss(
-        self, predictions: Dict[str, Any], batch: Dict[str, Any]
-    ) -> Dict[str, torch.Tensor]:
-        """Calculates the combined loss using NLL for continuous variables."""
-        losses = {}
-        total_loss = torch.tensor(
-            0.0, device=self.device
-        )  # Ensure loss is on correct device
-
-        # --- Targets ---
-        # Map SG target 1-230 -> 0-229 (assuming head predicts this range)
-        sg_target = batch["spacegroup"].squeeze(1) - 1
-        lattice_target = batch["lattice"]  # (b, 6)
-        # Atom targets: [Atom1, ..., AtomN, END] (exclude START)
-        atom_types_target_raw = batch["atom_types"][:, 1:]  # (b, T-1)
-        atom_wyckoffs_target_raw = batch["atom_wyckoffs"][:, 1:]  # (b, T-1)
-        atom_coords_target = batch["atom_coords"][:, 1:, :]  # (b, T-1, 3) in [0, 1)
-        atom_mask_target = batch["atom_mask"][:, 1:]  # (b, T-1)
-
-        # Map target indices for discrete losses (map -1, -2 -> positive embedding indices)
-        type_target_mapped = self._map_indices_for_embedding(
-            atom_types_target_raw, is_type=True
-        )
-        wyckoff_target_mapped = self._map_indices_for_embedding(
-            atom_wyckoffs_target_raw, is_type=False
-        )
-
-        # --- SG Loss (Cross Entropy) ---
-        # Ensure target indices are valid for the logits shape
-        loss_sg = self.sg_loss(predictions["sg_logits"], sg_target)
-        losses["sg_loss"] = loss_sg * self.hparams.sg_loss_weight
-        total_loss += losses["sg_loss"]
-
-        # --- Lattice Loss (NLL Normal) ---
-        lattice_mean = predictions["lattice_mean"]
-        lattice_log_var = predictions["lattice_log_var"]
-        # Ensure variance is positive and stable
-        lattice_var = torch.exp(lattice_log_var) + self.eps
-        lattice_std = torch.sqrt(lattice_var)
-        # Use independent Normal distributions
-        lattice_dist = Normal(lattice_mean, lattice_std)
-        nll_lattice = -lattice_dist.log_prob(lattice_target)  # (b, 6)
-        # Average NLL over batch and 6 parameters
-        nll_lattice = nll_lattice.mean()
-        losses["lattice_nll"] = nll_lattice * self.hparams.lattice_loss_weight
-        total_loss += losses["lattice_nll"]
-
-        # --- Atom Type Loss (Cross Entropy) ---
-        type_logits_flat = predictions["type_logits"].reshape(
-            -1, self.effective_type_vocab_size
-        )
-        type_target_flat = type_target_mapped.reshape(-1)
-        loss_type = self.type_loss(
-            type_logits_flat, type_target_flat
-        )  # Handles ignore_index=PAD
-        losses["type_loss"] = loss_type * self.hparams.type_loss_weight
-        total_loss += losses["type_loss"]
-
-        # --- Atom Wyckoff Loss (Cross Entropy) ---
-        wyckoff_logits_flat = predictions["wyckoff_logits"].reshape(
-            -1, self.effective_wyckoff_vocab_size
-        )
-        wyckoff_target_flat = wyckoff_target_mapped.reshape(-1)
-        loss_wyckoff = self.wyckoff_loss(
-            wyckoff_logits_flat, wyckoff_target_flat
-        )  # Handles ignore_index=PAD
-        losses["wyckoff_loss"] = loss_wyckoff * self.hparams.wyckoff_loss_weight
-        total_loss += losses["wyckoff_loss"]
-
-        # --- Coordinate Loss (NLL VonMises) ---
-        coord_loc = predictions["coord_loc"]  # (b, T-1, 3) in [-pi, pi]
-        coord_concentration = predictions["coord_concentration"]  # (b, T-1, 3) > 0
-        # Transform target coordinates [0, 1) -> angles [-pi, pi)
-        target_coords_angle = (
-            atom_coords_target * 2 * math.pi
-        ) - math.pi  # (b, T-1, 3)
-
-        # Create VonMises distribution
-        # Ensure concentration is detached if needed, though usually not required for log_prob
-        coord_dist = VonMises(loc=coord_loc, concentration=coord_concentration)
-        # Calculate log probability (NLL = -log_prob)
-        nll_coord_unmasked = -coord_dist.log_prob(target_coords_angle)  # (b, T-1, 3)
-
-        # Mask the NLL based on valid target atoms (exclude padding)
-        mask_expanded = atom_mask_target.unsqueeze(-1).float()  # (b, T-1, 1)
-        nll_coord_masked = nll_coord_unmasked * mask_expanded  # (b, T-1, 3)
-
-        # Average over non-masked elements (valid atoms and coordinates)
-        num_valid = mask_expanded.sum() * 3  # Multiply by 3 for x, y, z dimensions
-        nll_coord = (
-            nll_coord_masked.sum() / num_valid
-            if num_valid > 0
-            else torch.tensor(0.0, device=self.device)
-        )
-        losses["coord_nll"] = nll_coord * self.hparams.coord_loss_weight
-        total_loss += losses["coord_nll"]
-
-        losses["total_loss"] = total_loss
-        return losses
-
-    # --- Lightning Steps (training_step, validation_step, test_step) ---
-    def training_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
-        predictions = self(batch)
-        losses = self.calculate_loss(predictions, batch)
-        batch_size = batch["composition"].size(0)
-        log_opts = {
-            "on_step": True,
-            "on_epoch": True,
-            "prog_bar": False,
-            "batch_size": batch_size,
-        }
-        self.log(
-            "train/total_loss",
-            losses["total_loss"],
-            prog_bar=True,
-            batch_size=batch_size,
-        )
-        self.log_dict(
-            {f"train/{k}": v for k, v in losses.items() if k != "total_loss"},
-            **log_opts,
-        )
-        return losses["total_loss"]
-
-    def validation_step(self, batch: Dict[str, Any], batch_idx: int):
-        predictions = self(batch)
-        losses = self.calculate_loss(predictions, batch)
-        batch_size = batch["composition"].size(0)
-        log_opts = {"on_step": False, "on_epoch": True, "batch_size": batch_size}
-        self.log_dict({f"val/{k}": v for k, v in losses.items()}, **log_opts)
-
-    def test_step(self, batch: Dict[str, Any], batch_idx: int):
-        predictions = self(batch)
-        losses = self.calculate_loss(predictions, batch)
-        batch_size = batch["composition"].size(0)
-        log_opts = {"on_step": False, "on_epoch": True, "batch_size": batch_size}
-        self.log_dict({f"test/{k}": v for k, v in losses.items()}, **log_opts)
-
-    # --- Optimizer ---
-    def configure_optimizers(self) -> optim.Optimizer:
-        optimizer = optim.AdamW(
-            self.parameters(),
-            lr=self.hparams.learning_rate,
-            weight_decay=self.hparams.weight_decay,
-        )
-        # Optional: Add LR scheduler
-        # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=10)
-        # return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "monitor": "val/total_loss"}}
-        return optimizer
-
-    # --- Generation (Sampling from Distributions) ---
+    @property
+    def device(self):
+        return next(self.parameters()).device
+        
     @torch.no_grad()
     def generate(
         self,
@@ -496,7 +330,7 @@ class HierarchicalCrystalTransformer(pl.LightningModule):
         temperature: float = 1.0,  # For categorical sampling
         # top_k / top_p could be added here
     ) -> Dict[str, Any]:
-        """Autoregressive generation for HCT V3 (sampling)."""
+        """Autoregressive generation for HCT (sampling)."""
         self.eval()
         device = self.device
         composition = composition.float().to(device)
@@ -519,7 +353,7 @@ class HierarchicalCrystalTransformer(pl.LightningModule):
         predicted_sg_num = predicted_sg_idx + 1
 
         # --- Stage 3: Lattice Distribution & Sampling/Mean ---
-        if self.hparams.condition_lattice_on_sg:
+        if self.hparams['condition_lattice_on_sg']:
             combined_context_features = torch.cat(
                 [comp_memory.squeeze(1), sg_proj.squeeze(1)], dim=-1
             )
@@ -549,10 +383,10 @@ class HierarchicalCrystalTransformer(pl.LightningModule):
         )  # (1, 3, d)
         # Initialize with START tokens/coords
         start_type_raw = torch.tensor(
-            [[self.hparams.start_idx]], dtype=torch.long, device=device
+            [[self.hparams['start_idx']]], dtype=torch.long, device=device
         )
         start_wyckoff_raw = torch.tensor(
-            [[self.hparams.start_idx]], dtype=torch.long, device=device
+            [[self.hparams['start_idx']]], dtype=torch.long, device=device
         )
         start_coords = torch.zeros(
             (1, 1, 3), dtype=torch.float, device=device
@@ -643,11 +477,11 @@ class HierarchicalCrystalTransformer(pl.LightningModule):
                     self.type_end_embed_idx if is_type else self.wyckoff_end_embed_idx
                 )
                 if embed_idx == start_embed:
-                    return self.hparams.start_idx
+                    return self.hparams['start_idx']
                 if embed_idx == end_embed:
-                    return self.hparams.end_idx
-                if embed_idx == self.hparams.pad_idx:
-                    return self.hparams.pad_idx
+                    return self.hparams['end_idx']
+                if embed_idx == self.hparams['pad_idx']:
+                    return self.hparams['pad_idx']
                 # Clamp embed_idx just in case prediction is out of bounds before check
                 embed_idx_item = embed_idx.clamp(min=0).item()
                 if 1 <= embed_idx_item <= max_valid:
@@ -655,19 +489,19 @@ class HierarchicalCrystalTransformer(pl.LightningModule):
                 print(
                     f"Warning: Unexpected embed index predicted: {embed_idx.item()}, mapping to END."
                 )
-                return self.hparams.end_idx
+                return self.hparams['end_idx']
 
             next_type_raw = reverse_map(next_type_embed_idx, is_type=True)
             next_wyckoff_raw = reverse_map(next_wyckoff_embed_idx, is_type=False)
 
             # Check for END token
-            if next_type_raw == self.hparams.end_idx:
+            if next_type_raw == self.hparams['end_idx']:
                 break
 
             # Store generated atom (use original indices and sampled frac coords)
             if (
-                next_type_raw != self.hparams.start_idx
-                and next_type_raw != self.hparams.pad_idx
+                next_type_raw != self.hparams['start_idx']
+                and next_type_raw != self.hparams['pad_idx']
             ):
                 generated_types_raw.append(next_type_raw)
                 generated_wyckoffs_raw.append(next_wyckoff_raw)

@@ -1,42 +1,119 @@
+#!/usr/bin/env python3
+
+from typing import Any, Dict, List, Optional, Tuple
+
 import hydra
-from omegaconf import DictConfig, OmegaConf
-import pytorch_lightning as pl
-from mattermake.data.hct_datamodule import HCTDataModule
-from mattermake.models.hct import HierarchicalCrystalTransformer
-import os
+import lightning as L
+import torch
+from lightning import Callback, Trainer
+from omegaconf import DictConfig
 
-
-@hydra.main(
-    config_path="mattermake/configs", config_name="hct_config", version_base="1.3"
+from mattermake.models.hct_module import HierarchicalCrystalTransformer
+from mattermake.utils import (
+    RankedLogger,
+    extras,
+    get_metric_value,
+    instantiate_callbacks,
+    instantiate_loggers,
+    log_hyperparameters,
+    task_wrapper,
 )
-def main(cfg: DictConfig):
-    print(OmegaConf.to_yaml(cfg))
 
-    # Set project root for relative paths if needed
-    if "PROJECT_ROOT" not in os.environ:
-        os.environ["PROJECT_ROOT"] = os.getcwd()
+log = RankedLogger(__name__, rank_zero_only=True)
 
-    # Instantiate DataModule
-    datamodule = HCTDataModule(**cfg.datamodule)
 
-    # Instantiate Model
-    model = HierarchicalCrystalTransformer(**cfg.model)
+@task_wrapper
+def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+Trains the Hierarchical Crystal Transformer model. Can additionally evaluate on a test set and compute metrics.
 
-    # Callbacks (optional, can be extended)
-    callbacks = []
+    :param cfg: A DictConfig configuration composed by Hydra.
+    :return: A tuple with metrics dict and the dict with all instantiated objects.
+    """
+    # Set seed for random number generators in pytorch, numpy and python.random
+    if cfg.get("seed"):
+        L.seed_everything(cfg.seed, workers=True)
 
-    # Logger (optional, can be extended)
-    logger = None
+    # Set precision for numerical operations
+    if torch.cuda.is_available():
+        torch.set_float32_matmul_precision('medium')
 
-    # Trainer
-    trainer = pl.Trainer(**cfg.trainer, callbacks=callbacks, logger=logger)
+    log.info(f"Instantiating datamodule <{cfg.data._target_}>")
+    datamodule = hydra.utils.instantiate(cfg.data)
 
-    # Fit
-    trainer.fit(model, datamodule=datamodule)
+    log.info(f"Instantiating model <{cfg.model._target_}>")
+    model: HierarchicalCrystalTransformer = hydra.utils.instantiate(cfg.model)
 
-    # Optionally test after training
-    if cfg.get("test_after_train", False):
-        trainer.test(model, datamodule=datamodule)
+    log.info("Instantiating callbacks...")
+    callbacks: List[Callback] = instantiate_callbacks(cfg.get("callbacks"))
+
+    log.info("Instantiating loggers...")
+    loggers = instantiate_loggers(cfg.get("logger"))
+
+    log.info(f"Instantiating trainer <{cfg.trainer._target_}>")
+    trainer: Trainer = hydra.utils.instantiate(cfg.trainer, callbacks=callbacks, logger=loggers)
+
+    object_dict = {
+        "cfg": cfg,
+        "datamodule": datamodule,
+        "model": model,
+        "trainer": trainer,
+        "callbacks": callbacks,
+        "logger": loggers,
+    }
+
+    if loggers:
+        log.info("Logging hyperparameters!")
+        log_hyperparameters(object_dict)
+
+    if cfg.get("train"):
+        log.info("Starting training!")
+        trainer.fit(model=model, datamodule=datamodule, ckpt_path=cfg.get("ckpt_path"))
+
+    train_metrics = trainer.callback_metrics
+
+    if cfg.get("test"):
+        log.info("Starting testing!")
+        if not cfg.get("train") or cfg.trainer.get("fast_dev_run"):
+            # Load best checkpoint after training
+            ckpt_path = cfg.get("ckpt_path")
+            if not ckpt_path:
+                log.warning(
+                    "Best checkpoint not found! Using current model parameters for testing..."
+                )
+                ckpt_path = None
+        else:
+            ckpt_path = "best"
+
+        test_metrics = trainer.test(model=model, datamodule=datamodule, ckpt_path=ckpt_path)
+        
+        # Update metrics with test metrics
+        if test_metrics and len(test_metrics) > 0:
+            metrics = test_metrics[0]
+        else:
+            metrics = {}
+            
+        # Combine with training metrics
+        metrics.update(train_metrics)
+    else:
+        metrics = train_metrics
+
+    # Return metric dictionary and object dictionary for later use
+    return metrics, object_dict
+
+
+@hydra.main(version_base="1.3", config_path="../configs", config_name="train_hct.yaml")
+def main(cfg: DictConfig) -> Optional[float]:
+    # Apply optional utilities
+    extras(cfg)
+
+    # Train model
+    metric_dict, _ = train(cfg)
+
+    # Return optimized metric value for optuna (if applicable)
+    optimized_metric = cfg.get("optimized_metric")
+    if optimized_metric:
+        return get_metric_value(metric_dict, optimized_metric)
 
 
 if __name__ == "__main__":

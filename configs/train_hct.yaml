@@ -39,7 +39,7 @@ defaults:
   # - optional local: default
 
 # passing checkpoint path is optional
-# ckpt_path: null
+ckpt_path: null
 
 # tags to help you identify your experiments
 # you can use it to filter runs on Tensorboard or W&B

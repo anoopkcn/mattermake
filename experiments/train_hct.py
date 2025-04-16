@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 from typing import Any, Dict, List, Optional, Tuple
 
 import hydra
@@ -25,10 +23,10 @@ log = RankedLogger(__name__, rank_zero_only=True)
 @task_wrapper
 def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
-Trains the Hierarchical Crystal Transformer model. Can additionally evaluate on a test set and compute metrics.
+    Trains the Hierarchical Crystal Transformer model. Can additionally evaluate on a test set and compute metrics.
 
-    :param cfg: A DictConfig configuration composed by Hydra.
-    :return: A tuple with metrics dict and the dict with all instantiated objects.
+        :param cfg: A DictConfig configuration composed by Hydra.
+        :return: A tuple with metrics dict and the dict with all instantiated objects.
     """
     # Set seed for random number generators in pytorch, numpy and python.random
     if cfg.get("seed"):
@@ -36,7 +34,7 @@ Trains the Hierarchical Crystal Transformer model. Can additionally evaluate on 
 
     # Set precision for numerical operations
     if torch.cuda.is_available():
-        torch.set_float32_matmul_precision('medium')
+        torch.set_float32_matmul_precision("medium")
 
     log.info(f"Instantiating datamodule <{cfg.data._target_}>")
     datamodule = hydra.utils.instantiate(cfg.data)
@@ -51,7 +49,9 @@ Trains the Hierarchical Crystal Transformer model. Can additionally evaluate on 
     loggers = instantiate_loggers(cfg.get("logger"))
 
     log.info(f"Instantiating trainer <{cfg.trainer._target_}>")
-    trainer: Trainer = hydra.utils.instantiate(cfg.trainer, callbacks=callbacks, logger=loggers)
+    trainer: Trainer = hydra.utils.instantiate(
+        cfg.trainer, callbacks=callbacks, logger=loggers
+    )
 
     object_dict = {
         "cfg": cfg,
@@ -85,14 +85,16 @@ Trains the Hierarchical Crystal Transformer model. Can additionally evaluate on 
         else:
             ckpt_path = "best"
 
-        test_metrics = trainer.test(model=model, datamodule=datamodule, ckpt_path=ckpt_path)
-        
+        test_metrics = trainer.test(
+            model=model, datamodule=datamodule, ckpt_path=ckpt_path
+        )
+
         # Update metrics with test metrics
         if test_metrics and len(test_metrics) > 0:
             metrics = test_metrics[0]
         else:
             metrics = {}
-            
+
         # Combine with training metrics
         metrics.update(train_metrics)
     else:

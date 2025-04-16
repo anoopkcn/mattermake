@@ -13,6 +13,10 @@ from mattermake.data.components.cif_processing import (
     get_lattice_parameters,
     get_asymmetric_unit_atoms,
 )
+from mattermake.utils import RankedLogger
+
+log = RankedLogger(__name__, rank_zero_only=True)
+
 
 VOCAB_SIZE = 100  # Number of elements to support in composition vector
 
@@ -22,8 +26,12 @@ def process_dataframe(
     output_path: str,
     vocab_size: int = VOCAB_SIZE,
 ):
+    log.info(f"Processing dataframe with {len(df)} entries")
+    log.info(f"Output will be saved to {output_path}")
+
     sg_to_symbols = load_wyckoff_symbols()
     wyckoff_mapping = wyckoff_symbol_to_index(sg_to_symbols)
+    log.info(f"Loaded Wyckoff symbols for {len(sg_to_symbols)} space groups")
 
     processed_data = []
 
@@ -53,12 +61,15 @@ def process_dataframe(
                     "atom_coords": torch.tensor(atom_coords, dtype=torch.float32),
                 }
             )
+            if len(processed_data) % 100 == 0:
+                log.debug(f"Processed {len(processed_data)} structures")
+
         except Exception as e:
-            print(f"Error processing {material_id}: {e}")
+            log.error(f"Error processing {material_id}: {str(e)}")
 
     # Save processed data as a torch file
     torch.save(processed_data, output_path)
-    print(f"Saved processed data to {output_path}")
+    log.info(f"Saved {len(processed_data)} processed structures to {output_path}")
 
 
 if __name__ == "__main__":
@@ -82,5 +93,12 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    log.info("Starting data preparation process")
+    log.info(f"Input CSV: {args.input_csv}")
+    log.info(f"Output file: {args.output}")
+    log.info(f"Vocabulary size: {args.vocab_size}")
+
     df = pd.read_csv(args.input_csv)
-    process_dataframe(df, args.wyckoff_symbols, args.output, args.vocab_size)
+    log.info(f"Loaded {len(df)} entries from CSV file")
+
+    process_dataframe(df, args.output, args.vocab_size)

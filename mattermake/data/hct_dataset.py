@@ -3,6 +3,10 @@ from torch.utils.data import Dataset
 from pathlib import Path
 from typing import Dict, Any
 
+from mattermake.utils import RankedLogger
+
+log = RankedLogger(__name__, rank_zero_only=True)
+
 
 class HCTDataset(Dataset):
     """
@@ -40,6 +44,7 @@ class HCTDataset(Dataset):
         super().__init__()
         self.data_files = data_files
         if not self.data_files:
+            log.error("No data files provided to HCTDataset.")
             raise ValueError("No data files provided to HCTDataset.")
 
         # Store token config
@@ -51,10 +56,15 @@ class HCTDataset(Dataset):
         self.start_coords = torch.tensor(start_coords, dtype=torch.float)
         self.end_coords = torch.tensor(end_coords, dtype=torch.float)
 
+        log.info(f"Initialized HCTDataset with {len(data_files)} files")
+        log.debug(f"START token: {start_token_idx}, END token: {end_token_idx}")
+
         # --- Validation ---
         if self.start_idx == 0 or self.end_idx == 0:
+            log.error("START/END tokens cannot be 0, as 0 is reserved for PAD.")
             raise ValueError("START/END tokens cannot be 0, as 0 is reserved for PAD.")
         if self.start_idx == self.end_idx:
+            log.error("START and END tokens must be distinct.")
             raise ValueError("START and END tokens must be distinct.")
 
     def __len__(self) -> int:
@@ -77,6 +87,7 @@ class HCTDataset(Dataset):
         """
         filepath = self.data_files[idx]
         try:
+            log.debug(f"Loading file: {filepath}")
             data = torch.load(filepath)
 
             # --- Load and prepare sequences ---
@@ -88,13 +99,14 @@ class HCTDataset(Dataset):
 
             # Validate indices are >= 1 (as expected from regenrated data)
             if any(at <= 0 for at in atom_types):
-                raise ValueError(
-                    f"File {filepath} contains non-positive atom type indices: {atom_types}. Expected indices >= 1."
-                )
+                error_msg = f"File {filepath} contains non-positive atom type indices: {atom_types}. Expected indices >= 1."
+                log.error(error_msg)
+                raise ValueError(error_msg)
+
             if any(aw <= 0 for aw in atom_wyckoffs):
-                raise ValueError(
-                    f"File {filepath} contains non-positive Wyckoff indices: {atom_wyckoffs}. Expected indices >= 1."
-                )
+                error_msg = f"File {filepath} contains non-positive Wyckoff indices: {atom_wyckoffs}. Expected indices >= 1."
+                log.error(error_msg)
+                raise ValueError(error_msg)
 
             if isinstance(raw_coords, torch.Tensor):
                 raw_coords = raw_coords.tolist()
@@ -139,19 +151,19 @@ class HCTDataset(Dataset):
             )
             final_data["lattice"] = torch.tensor(data["lattice"], dtype=torch.float)
             if final_data["lattice"].shape != (6,):
-                raise ValueError(
-                    f"Expected lattice parameters to have shape (6,), but got {final_data['lattice'].shape} in file {filepath}"
-                )
+                error_msg = f"Expected lattice parameters to have shape (6,), but got {final_data['lattice'].shape} in file {filepath}"
+                log.error(error_msg)
+                raise ValueError(error_msg)
 
             final_data["filepath"] = str(filepath)
 
             return final_data
         except Exception as e:
-            print(f"Error loading or processing file: {filepath}")
-            print(
+            log.error(f"Error loading or processing file: {filepath}")
+            log.error(
                 f"Original data keys: {list(data.keys()) if 'data' in locals() else 'N/A'}"
             )
-            print(
+            log.error(
                 f"Raw coords: {data.get('atom_coords', 'N/A') if 'data' in locals() else 'N/A'}"
             )
             raise e

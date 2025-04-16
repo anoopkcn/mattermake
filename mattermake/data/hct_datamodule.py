@@ -6,6 +6,10 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from mattermake.data.hct_dataset import HCTDataset
+from mattermake.utils import RankedLogger
+
+log = RankedLogger(__name__, rank_zero_only=True)
+
 
 # Using PAD = 0 scheme, requires indices >= 1 in data
 ATOM_TYPE_PAD_IDX = 0
@@ -105,6 +109,9 @@ class HCTDataModule(pl.LightningDataModule):
     ):
         super().__init__()
         self.save_hyperparameters(logger=False)
+        log.info(
+            f"Initializing HCTDataModule with batch_size={batch_size}, data_dir={processed_data_dir}"
+        )
 
         self.data_dir = Path(self.hparams.processed_data_dir)
         self.train_path = self.data_dir / self.hparams.train_subdir
@@ -128,27 +135,30 @@ class HCTDataModule(pl.LightningDataModule):
         }
         # Padding index is now consistently 0
         self.padding_idx = 0
+        log.info("HCTDataModule initialization complete")
 
     def prepare_data(self):
         if not self.data_dir.is_dir():
+            log.error(f"Processed data directory not found: {self.data_dir}")
             raise FileNotFoundError(
                 f"Processed data directory not found: {self.data_dir}"
             )
         for subdir_path in [self.train_path, self.val_path, self.test_path]:
             if not subdir_path.is_dir():
-                print(f"Warning: Data directory not found: {subdir_path}")
+                log.warning(f"Data directory not found: {subdir_path}")
 
     def setup(self, stage: Optional[str] = None):
+        log.info(f"Setting up HCTDataModule for stage: {stage}")
         if stage == "fit" or stage is None:
             train_files = sorted(list(self.train_path.glob(self.file_glob)))
             val_files = sorted(list(self.val_path.glob(self.file_glob)))
             if not train_files:
-                print(
-                    f"Warning: No training files found in {self.train_path} matching {self.file_glob}"
+                log.warning(
+                    f"No training files found in {self.train_path} matching {self.file_glob}"
                 )
             if not val_files:
-                print(
-                    f"Warning: No validation files found in {self.val_path} matching {self.file_glob}"
+                log.warning(
+                    f"No validation files found in {self.val_path} matching {self.file_glob}"
                 )
             self.train_dataset = (
                 HCTDataset(train_files, **self.dataset_kwargs) if train_files else None
@@ -156,23 +166,23 @@ class HCTDataModule(pl.LightningDataModule):
             self.val_dataset = (
                 HCTDataset(val_files, **self.dataset_kwargs) if val_files else None
             )
-            print(
+            log.info(
                 f"Loaded {len(self.train_dataset) if self.train_dataset else 0} training samples."
             )
-            print(
+            log.info(
                 f"Loaded {len(self.val_dataset) if self.val_dataset else 0} validation samples."
             )
 
         if stage == "test" or stage is None:
             test_files = sorted(list(self.test_path.glob(self.file_glob)))
             if not test_files:
-                print(
-                    f"Warning: No test files found in {self.test_path} matching {self.file_glob}"
+                log.warning(
+                    f"No test files found in {self.test_path} matching {self.file_glob}"
                 )
             self.test_dataset = (
                 HCTDataset(test_files, **self.dataset_kwargs) if test_files else None
             )
-            print(
+            log.info(
                 f"Loaded {len(self.test_dataset) if self.test_dataset else 0} test samples."
             )
 
@@ -181,15 +191,15 @@ class HCTDataModule(pl.LightningDataModule):
                 list(self.test_path.glob(self.file_glob))
             )  # Or dedicated predict path
             if not predict_files:
-                print(
-                    f"Warning: No prediction files found in {self.test_path} matching {self.file_glob}"
+                log.warning(
+                    f"No prediction files found in {self.test_path} matching {self.file_glob}"
                 )
             self.predict_dataset = (
                 HCTDataset(predict_files, **self.dataset_kwargs)
                 if predict_files
                 else None
             )
-            print(
+            log.info(
                 f"Loaded {len(self.predict_dataset) if self.predict_dataset else 0} prediction samples."
             )
 
@@ -197,9 +207,13 @@ class HCTDataModule(pl.LightningDataModule):
         self, dataset: Optional[HCTDataset], shuffle: bool
     ) -> DataLoader:
         if not dataset:
-            raise ValueError(
-                f"{'Train' if shuffle else 'Validation/Test/Predict'} dataset not available. Check data paths and setup stage."
-            )
+            msg = f"{'Train' if shuffle else 'Validation/Test/Predict'} dataset not available. Check data paths and setup stage."
+            log.error(msg)
+            raise ValueError(msg)
+
+        log.debug(
+            f"Creating dataloader with batch_size={self.hparams.batch_size}, shuffle={shuffle}"
+        )
         return DataLoader(
             dataset,
             batch_size=self.hparams.batch_size,
@@ -211,13 +225,17 @@ class HCTDataModule(pl.LightningDataModule):
         )
 
     def train_dataloader(self) -> DataLoader:
+        log.debug("Creating train dataloader")
         return self._get_dataloader(self.train_dataset, shuffle=True)
 
     def val_dataloader(self) -> DataLoader:
+        log.debug("Creating validation dataloader")
         return self._get_dataloader(self.val_dataset, shuffle=False)
 
     def test_dataloader(self) -> DataLoader:
+        log.debug("Creating test dataloader")
         return self._get_dataloader(self.test_dataset, shuffle=False)
 
     def predict_dataloader(self) -> DataLoader:
+        log.debug("Creating predict dataloader")
         return self._get_dataloader(self.predict_dataset, shuffle=False)

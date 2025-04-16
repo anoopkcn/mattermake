@@ -1,10 +1,17 @@
 from pymatgen.core import Structure
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
-from typing import List, Tuple, Dict
+from typing import List, Tuple
 
 from mattermake.utils import RankedLogger
+from mattermake.data.components.wyckoff_utils import (
+    get_global_wyckoff_index,
+    load_or_create_wyckoff_mapping,
+)
 
 log = RankedLogger(__name__, rank_zero_only=True)
+
+# Load the global Wyckoff mapping at module level
+GLOBAL_WYCKOFF_MAPPING = load_or_create_wyckoff_mapping()
 
 
 def parse_cif_file(cif_file: str) -> Structure:
@@ -104,17 +111,16 @@ def get_wyckoff_symbols_per_atom(structure: Structure) -> List[str]:
 
 def get_asymmetric_unit_atoms(
     structure: Structure,
-    sg_to_symbols: Dict[int, List[str]],
-    wyckoff_mapping: Dict[Tuple[int, str], int],
 ) -> List[Tuple[int, int, List[float]]]:
     """
     Returns a list of (atomic_number, wyckoff_index, free_coords) for each atom in the asymmetric unit.
+    Wyckoff indices are consistent across all space groups using a global mapping.
     """
-    log.debug("Extracting asymmetric unit atoms")
+    log.debug("Extracting asymmetric unit atoms using global Wyckoff mapping")
+
     sga = SpacegroupAnalyzer(structure, symprec=0.01)
     symm_struct = sga.get_symmetrized_structure()
     sg_num = sga.get_space_group_number()
-    # wyckoff_symbols = sg_to_symbols.get(sg_num, [])
 
     atom_data = []
     for site_group, wyckoff_symbol in zip(
@@ -123,15 +129,13 @@ def get_asymmetric_unit_atoms(
         atom = site_group[0]  # Get representative atom from the equivalent site group
         atomic_number = atom.specie.Z
 
-        key = (sg_num, wyckoff_symbol)
-        if key in wyckoff_mapping:
-            wyckoff_index = wyckoff_mapping[key]
-        else:
-            log.warning(
-                f"Wyckoff symbol '{wyckoff_symbol}' not found for space group {sg_num}. "
-                f"Using default index 1 for atom {atom.specie} at {atom.frac_coords}."
-            )
-            wyckoff_index = 1  # TODO:: DO SOMETHING ABOUT THE DEFAULT
+        # Only use the letter part (strip multiplicity if present)
+        wyckoff_letter = wyckoff_symbol[-1]
+
+        # Use the global mapping to get a consistent Wyckoff index
+        wyckoff_index = get_global_wyckoff_index(
+            sg_num, wyckoff_letter, GLOBAL_WYCKOFF_MAPPING
+        )
 
         coords = [float(c) for c in atom.frac_coords]
         atom_data.append((atomic_number, wyckoff_index, coords))
@@ -140,13 +144,9 @@ def get_asymmetric_unit_atoms(
 
 if __name__ == "__main__":
     import argparse
-    from mattermake.data.components.wyckoff_utils import (
-        load_wyckoff_symbols,
-        wyckoff_symbol_to_index,
-    )
 
     log.info("Running CIF processing module as script")
-    
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--cif_string",
@@ -169,12 +169,9 @@ if __name__ == "__main__":
     composition_vector = get_composition_vector(structure, vocab_size=100)
     space_group_number = get_spacegroup_number(structure)
     lattice_parameters = get_lattice_parameters(structure)
-    # wyckoff_data = get_wyckoff_symbols_per_atom(structure)
-    sg_to_symbols = load_wyckoff_symbols()
-    mapping = wyckoff_symbol_to_index(sg_to_symbols)
-    atom_seq = get_asymmetric_unit_atoms(structure, sg_to_symbols, mapping)
+    atom_seq = get_asymmetric_unit_atoms(structure)
 
-    log.info(
+    print(
         f"composition vector={composition_vector}\nspace_group_number={space_group_number},\nlattice_parameters={lattice_parameters}"
     )
 
@@ -182,6 +179,6 @@ if __name__ == "__main__":
     atom_wyckoffs = [item[1] for item in atom_seq]
     atom_coords = [item[2] for item in atom_seq]
 
-    log.info(
+    print(
         f"atom_types = {atom_types}\natom_wycoffs = {atom_wyckoffs}\natom_coords = {atom_coords}"
     )

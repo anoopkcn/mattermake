@@ -88,7 +88,7 @@ class HCTDataModule(pl.LightningDataModule):
 
     def __init__(
         self,
-        processed_data_dir: str = "data/processed/hct",
+        processed_data_dir: str = "data/hct",
         batch_size: int = 32,
         num_workers: int = 4,
         pin_memory: bool = True,

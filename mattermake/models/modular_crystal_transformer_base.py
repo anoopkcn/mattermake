@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import math
 from typing import Dict, Any, Optional
 
 from mattermake.models.components.modular_encoders import (
@@ -16,32 +15,7 @@ from mattermake.models.components.modular_decoders import (
     # Import other decoders here if added later
 )
 from mattermake.models.components.modular_attention import ModularCrossAttention
-
-
-# Re-use PositionalEncoding if it's defined elsewhere, or define it here
-class PositionalEncoding(nn.Module):
-    """Standard positional encoding."""
-
-    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
-        super().__init__()
-        self.dropout = nn.Dropout(p=dropout)
-
-        position = torch.arange(max_len).unsqueeze(1)
-        div_term = torch.exp(
-            torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model)
-        )
-        pe = torch.zeros(max_len, 1, d_model)
-        pe[:, 0, 0::2] = torch.sin(position * div_term)
-        pe[:, 0, 1::2] = torch.cos(position * div_term)
-        self.register_buffer("pe", pe)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: Tensor, shape [seq_len, batch_size, embedding_dim]
-        """
-        x = x + self.pe[: x.size(0)]
-        return self.dropout(x)
+from mattermake.models.components.positional_embeddings import RotaryPositionalEmbedding
 
 
 class ModularCrystalTransformerBase(nn.Module):
@@ -153,7 +127,8 @@ class ModularCrystalTransformerBase(nn.Module):
         # Combine atom step info (type emb + coords) and project # MODIFIED
         atom_step_dim = type_embed_dim + 3  # REMOVED wyckoff_embed_dim
         self.atom_input_proj = nn.Linear(atom_step_dim, d_model)
-        self.atom_pos_encoder = PositionalEncoding(d_model, dropout)
+        # Use Rotary Positional Embeddings instead of standard positional encoding
+        self.atom_pos_encoder = RotaryPositionalEmbedding(d_model, dropout)
 
         # --- Create Prediction Heads ---
         # Space Group Head
@@ -429,10 +404,9 @@ class ModularCrystalTransformerBase(nn.Module):
         if torch.isnan(atom_decoder_input).any():
             atom_decoder_input = torch.nan_to_num(atom_decoder_input, nan=0.0)
 
-        # Add Positional Encoding
-        atom_decoder_input_pos = self.atom_pos_encoder(
-            atom_decoder_input.permute(1, 0, 2)
-        ).permute(1, 0, 2)
+        # Apply Rotary Positional Embeddings
+        # RoPE handles batch-first tensors automatically
+        atom_decoder_input_pos = self.atom_pos_encoder(atom_decoder_input)
 
         # Check for NaNs after positional encoding
         if torch.isnan(atom_decoder_input_pos).any():
@@ -687,10 +661,9 @@ class ModularCrystalTransformerBase(nn.Module):
             )  # MODIFIED
             atom_decoder_input = self.atom_input_proj(atom_step_inputs)
 
-            # Positional encoding
-            pos_encoded_input = self.atom_pos_encoder(
-                atom_decoder_input.permute(1, 0, 2)
-            ).permute(1, 0, 2)
+            # Apply Rotary Positional Embeddings
+            # RoPE handles batch-first tensors automatically
+            pos_encoded_input = self.atom_pos_encoder(atom_decoder_input, offset=step)
 
             # Fused context
             fused_memory = self.atom_modular_cross_attn(

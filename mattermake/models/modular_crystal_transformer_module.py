@@ -3,23 +3,20 @@ import torch.nn as nn
 import torch.optim as optim
 from lightning.pytorch import LightningModule
 from torch.distributions import Normal
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from mattermake.models.modular_crystal_transformer_base import (
     ModularCrystalTransformerBase,
 )
-from mattermake.utils import (
-    RankedLogger,
-)
+from mattermake.utils import RankedLogger
 
 log = RankedLogger(__name__, rank_zero_only=True)
 
 
 class ModularCrystalTransformer(LightningModule):
     """
-    PyTorch Lightning module for the Modular Hierarchical Crystal Transformer.
+    PyTorch Lightning module for the Fully Modular Crystal Transformer.
     Handles training, validation, testing, loss calculation, and generation.
-    (Wyckoff removed)
     """
 
     def __init__(
@@ -27,56 +24,55 @@ class ModularCrystalTransformer(LightningModule):
         # --- Vocabularies & Indices ---
         element_vocab_size: int = 100,
         sg_vocab_size: int = 231,
-        # wyckoff_vocab_size: REMOVED
         pad_idx: int = 0,
         start_idx: int = -1,
         end_idx: int = -2,
         # --- Model Dimensions ---
         d_model: int = 256,
         type_embed_dim: int = 64,
-        # wyckoff_embed_dim: REMOVED
         # --- Transformer Params ---
         nhead: int = 8,
         num_atom_decoder_layers: int = 4,
         dim_feedforward: int = 1024,
         dropout: float = 0.1,
-        # --- Encoder Configuration ---
+        # --- Encoder/Decoder Configuration ---
         encoder_configs: Dict[str, Dict[str, Any]] = None,
-        # --- Decoder Configuration ---
         decoder_configs: Dict[str, Dict[str, Any]] = None,
+        # --- Encoding/Decoding Order ---
+        encoding_order: List[str] = None,
+        decoding_order: List[str] = None,
         # --- Optimizer & Loss Params ---
         learning_rate: float = 1e-4,
         weight_decay: float = 0.01,
         sg_loss_weight: float = 1.0,
         lattice_loss_weight: float = 1.0,
         type_loss_weight: float = 1.0,
-        # wyckoff_loss_weight: REMOVED
         coord_loss_weight: float = 1.0,
         eps: float = 1e-6,
         **kwargs,  # Catch any extra hparams
     ):
         super().__init__()
         self.save_hyperparameters()
-        log.info("Initializing ModularCrystalTransformer (Wyckoff Removed)")
+        log.info("Initializing Fully Modular Crystal Transformer")
 
         # Initialize the base transformer model
         log.info(f"Creating modular base model with d_model={d_model}, nhead={nhead}")
         self.model = ModularCrystalTransformerBase(
             element_vocab_size=element_vocab_size,
             sg_vocab_size=sg_vocab_size,
-            # wyckoff_vocab_size REMOVED
             pad_idx=pad_idx,
             start_idx=start_idx,
             end_idx=end_idx,
             d_model=d_model,
             type_embed_dim=type_embed_dim,
-            # wyckoff_embed_dim REMOVED
             nhead=nhead,
             num_atom_decoder_layers=num_atom_decoder_layers,
             dim_feedforward=dim_feedforward,
             dropout=dropout,
             encoder_configs=encoder_configs,
             decoder_configs=decoder_configs,
+            encoding_order=encoding_order,
+            decoding_order=decoding_order,
             eps=eps,
             **kwargs,
         )
@@ -85,22 +81,30 @@ class ModularCrystalTransformer(LightningModule):
         log.info("Setting up loss functions")
         self.sg_loss = nn.CrossEntropyLoss()
         self.type_loss = nn.CrossEntropyLoss(ignore_index=self.hparams.pad_idx)
-        # self.wyckoff_loss REMOVED
         # Lattice/Coord NLL loss calculated inline
-        log.info("ModularCrystalTransformer initialization complete")
+        log.info("Fully Modular Crystal Transformer initialization complete")
 
     def forward(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         """Forward pass using the base model"""
         return self.model(batch)
 
-    # Delegate index mapping to the base model
-    def _map_indices_for_embedding(
-        self, indices: torch.Tensor
-    ) -> torch.Tensor:  # MODIFIED: Removed is_type
-        # Base model's method now assumes is_type=True or raises error
-        return self.model._map_indices_for_embedding(
-            indices
-        )  # MODIFIED: Removed is_type
+    # Add back a simplified mapping function specifically for loss calculation
+    def _map_indices_for_embedding(self, indices: torch.Tensor) -> torch.Tensor:
+        """Maps special token indices to embedding indices for loss calculation."""
+        # This is needed because the loss expects mapped indices
+        element_vocab_size = self.hparams.element_vocab_size
+        start_embed_idx = element_vocab_size + 1  # START token
+        end_embed_idx = element_vocab_size + 2  # END token
+        pad_idx = self.hparams.pad_idx
+        start_idx = self.hparams.start_idx
+        end_idx = self.hparams.end_idx
+
+        indices = indices.long()
+        mapped_indices = indices.clone()
+        mapped_indices[indices == start_idx] = start_embed_idx
+        mapped_indices[indices == end_idx] = end_embed_idx
+        mapped_indices[indices == pad_idx] = pad_idx  # Keep pad_idx the same
+        return mapped_indices
 
     def calculate_loss(
         self, predictions: Dict[str, Any], batch: Dict[str, Any]

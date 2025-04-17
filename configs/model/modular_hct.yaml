@@ -1,29 +1,26 @@
 # mattermake/configs/model/modular_hct.yaml
-# Configuration for the Modular Hierarchical Crystal Transformer
+# Configuration for the Fully Modular Crystal Transformer
 _target_: mattermake.models.modular_crystal_transformer_module.ModularCrystalTransformer
 
 # --- Vocabularies & Indices ---
 element_vocab_size: 100
 sg_vocab_size: 231
-# wyckoff_vocab_size: REMOVED
 pad_idx: 0
 start_idx: -1
 end_idx: -2
 
 # --- Model Dimensions ---
 d_model: 256
-# These are now used directly by atom embeddings/projections
 type_embed_dim: 64
-# wyckoff_embed_dim: REMOVED
 
-# --- Transformer Params (Mainly for Atom Decoder) ---
+# --- Transformer Params ---
 nhead: 8
 num_atom_decoder_layers: 4
 dim_feedforward: 1024
 dropout: 0.1
 
-# --- Encoder Configuration (NEW) ---
-# Define which encoders to use and their specific parameters
+# --- Encoder Configuration ---
+# Define all modular encoders and their specific parameters
 encoder_configs:
   composition:
     # Uses element_vocab_size from above
@@ -34,34 +31,50 @@ encoder_configs:
     # Uses d_model from above
     embed_dim: 64 # Specific embedding dim for spacegroup before projection
   lattice:
-    # New encoder for lattice parameters
+    # Lattice parameter encoder
     latent_dim: 64 # Dimension of intermediate lattice representation
     equivariant: false # Use non-equivariant version for now
-  # wyckoff: # Example if WyckoffEncoder was added
-  #   vocab_size: ${model.wyckoff_vocab_size} # Use global param
-  #   embed_dim: 64
-  # constraints: # Example for a hypothetical constraint encoder
-  #   input_dim: 10 # e.g., 10 constraint features
-  #   hidden_layers: [64, 128]
+  atom_type:
+    # New dedicated atom type encoder
+    element_vocab_size: ${model.element_vocab_size}
+    type_embed_dim: ${model.type_embed_dim}
+    num_layers: 2
+    nhead: ${model.nhead}
+    dim_feedforward: ${model.dim_feedforward}
+    dropout: ${model.dropout}
+    pad_idx: ${model.pad_idx}
+    start_idx: ${model.start_idx}
+    end_idx: ${model.end_idx}
+  coordinate:
+    # New dedicated coordinate encoder
+    hidden_dim: 128
+    num_layers: 2
+    nhead: ${model.nhead}
+    dim_feedforward: ${model.dim_feedforward}
+    dropout: ${model.dropout}
 
-# --- Optimizer & Loss Params (Copied from hct.yaml) ---
+# --- Optimizer & Loss Params ---
 learning_rate: 1e-4
 weight_decay: 0.01
 sg_loss_weight: 1.0
 lattice_loss_weight: 1.0
 type_loss_weight: 1.0
-# wyckoff_loss_weight: REMOVED
 coord_loss_weight: 1.0
 eps: 1e-6
 
 # --- Decoder Configuration ---
 # Define which decoders to use and their specific parameters
 decoder_configs:
-  type:
-    # Uses the effective_type_vocab_size from above
-    # Parameters to customize type prediction can be added here
+  spacegroup:
+    sg_vocab_size: 230  # 1-230 space group range
+  lattice:
+    # Dedicated lattice decoder - uses default params
+  atom_type:
+    # Atom type decoder - automatically uses effective_type_vocab_size
   coordinate:
     eps: 1e-6  # Minimum value for numerical stability
-    # Other coordinate prediction parameters can be added here
 
-
+# --- Encoding/Decoding Order ---
+# Order in which encoders and decoders are applied
+encoding_order: ["composition", "spacegroup", "lattice", "atom_type", "coordinate"]
+decoding_order: ["spacegroup", "lattice", "atom_type", "coordinate"]

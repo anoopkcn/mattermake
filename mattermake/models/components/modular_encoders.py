@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from typing import Optional
 
 
 class EncoderBase(nn.Module):
@@ -146,6 +147,122 @@ class LatticeEncoder(EncoderBase):
             encoded = encoded.unsqueeze(1)  # (batch_size, 1, d_model)
 
         return encoded
+
+
+class AtomTypeEncoder(EncoderBase):
+    """Encodes atom type sequences"""
+
+    def __init__(
+        self,
+        element_vocab_size: int,
+        type_embed_dim: int,
+        d_model: int,
+        nhead: int = 8,
+        num_layers: int = 2,
+        dim_feedforward: int = 1024,
+        dropout: float = 0.1,
+        pad_idx: int = 0,
+        start_idx: int = -1,
+        end_idx: int = -2,
+    ):
+        super().__init__(d_output=d_model)
+        # Create embedding layer
+        self.effective_vocab_size = element_vocab_size + 3  # +3 for PAD, START, END
+        self.type_embedding = nn.Embedding(
+            self.effective_vocab_size, type_embed_dim, padding_idx=pad_idx
+        )
+
+        # Projection to d_model
+        self.projection = nn.Linear(type_embed_dim, d_model)
+
+        # Optional transformer layers for more sophisticated encoding
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model, nhead, dim_feedforward, dropout, batch_first=True
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers)
+
+        # Store index mapping info
+        self.pad_idx = pad_idx
+        self.start_idx = start_idx
+        self.end_idx = end_idx
+        self.type_start_embed_idx = element_vocab_size + 1
+        self.type_end_embed_idx = element_vocab_size + 2
+
+    def _map_indices_for_embedding(self, indices: torch.Tensor) -> torch.Tensor:
+        """Maps PAD, START, END indices to non-negative indices for embedding lookup."""
+        indices = indices.long()
+        mapped_indices = indices.clone()
+        mapped_indices[indices == self.start_idx] = self.type_start_embed_idx
+        mapped_indices[indices == self.end_idx] = self.type_end_embed_idx
+        return mapped_indices
+
+    def forward(
+        self, atom_types: torch.Tensor, mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """
+        Args:
+            atom_types: (batch_size, seq_len) atom type indices
+            mask: (batch_size, seq_len) boolean mask (True where padded)
+        Returns:
+            context: (batch_size, seq_len, d_model)
+        """
+        # Map indices and get embeddings
+        mapped_indices = self._map_indices_for_embedding(atom_types)
+        mapped_indices = torch.clamp(mapped_indices, 0, self.effective_vocab_size - 1)
+
+        # Get embeddings and project
+        type_embeds = self.type_embedding(mapped_indices)
+        proj_embeds = self.projection(type_embeds)
+
+        # Apply transformer encoder if needed (with proper masking)
+        key_padding_mask = ~mask if mask is not None else None
+        output = self.encoder(proj_embeds, src_key_padding_mask=key_padding_mask)
+
+        return output
+
+
+class AtomCoordinateEncoder(EncoderBase):
+    """Encodes atom coordinate sequences"""
+
+    def __init__(
+        self,
+        d_model: int,
+        hidden_dim: int = 128,
+        num_layers: int = 2,
+        nhead: int = 8,
+        dim_feedforward: int = 1024,
+        dropout: float = 0.1,
+    ):
+        super().__init__(d_output=d_model)
+        # Process raw coordinates through MLP
+        self.coords_mlp = nn.Sequential(
+            nn.Linear(3, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, d_model)
+        )
+
+        # Optional transformer layers
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model, nhead, dim_feedforward, dropout, batch_first=True
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers)
+
+    def forward(
+        self, coords: torch.Tensor, mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """
+        Args:
+            coords: (batch_size, seq_len, 3) fractional coordinates
+            mask: (batch_size, seq_len) boolean mask (True where padded)
+        Returns:
+            context: (batch_size, seq_len, d_model)
+        """
+        # Process coordinates
+        processed_coords = self.coords_mlp(coords)
+
+        # Apply transformer encoder if needed (with proper masking)
+        key_padding_mask = ~mask if mask is not None else None
+        output = self.encoder(processed_coords, src_key_padding_mask=key_padding_mask)
+
+        return output
 
 
 # Add more encoders as needed (WyckoffEncoder, ConstraintEncoder, etc.)

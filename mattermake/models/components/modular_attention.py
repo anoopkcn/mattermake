@@ -10,8 +10,12 @@ class ModularCrossAttention(nn.Module):
         self, encoder_names: List[str], d_model: int, nhead: int, dropout: float = 0.1
     ):
         super().__init__()
+        self.d_model = d_model  # Store d_model for dynamic fusion
+
+        # Store the possible encoder names (superset of what might be used)
         self.encoder_names = encoder_names
-        # Create separate MultiheadAttention modules for each encoder context
+
+        # Create separate MultiheadAttention modules for each possible encoder
         self.cross_attns = nn.ModuleDict(
             {
                 name: nn.MultiheadAttention(
@@ -20,8 +24,17 @@ class ModularCrossAttention(nn.Module):
                 for name in encoder_names
             }
         )
-        # Fusion layer (simple concatenation and linear projection)
-        self.fusion = nn.Linear(len(encoder_names) * d_model, d_model)
+
+        # Dynamic fusion approach - we'll handle the projection in forward
+        # Instead of a fixed linear layer, use a weight matrix that can be indexed
+        # Create a projection weight for each encoder
+        self.fusion_weights = nn.Parameter(
+            torch.randn(len(encoder_names), d_model, d_model)
+        )
+        self.fusion_bias = nn.Parameter(torch.zeros(d_model))
+        # Initialize using xavier uniform
+        nn.init.xavier_uniform_(self.fusion_weights)
+
         self.norm = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
 
@@ -72,14 +85,38 @@ class ModularCrossAttention(nn.Module):
             # Return zero tensor or handle appropriately
             return torch.zeros_like(query)
 
-        # Concatenate and fuse
-        fused = torch.cat(
-            attended_outputs, dim=-1
-        )  # (batch, target_len, d_model*num_encoders)
-        fused_projected = self.fusion(fused)  # (batch, target_len, d_model)
+        # New dynamic fusion approach
+        if not attended_outputs:
+            # Return zero tensor if no attention was performed
+            return torch.zeros_like(query)
 
-        # Apply residual connection, dropout, and normalization (standard transformer block pattern)
-        # Note: The query here acts like the 'residual' input before the cross-attention block
-        output = self.norm(query + self.dropout(fused_projected))
+        # Initialize output tensor
+        batch_size, target_len, _ = query.shape
+        fused = torch.zeros(batch_size, target_len, self.d_model, device=query.device)
+
+        # Keep track of which encoders were actually used
+        used_encoder_indices = []
+
+        # Process each attended output separately
+        for i, name in enumerate(self.encoder_names):
+            if name in encoder_outputs and i < len(attended_outputs):
+                # Get the attended output for this encoder
+                attended = attended_outputs[len(used_encoder_indices)]
+
+                # Apply this encoder's fusion weights
+                # (batch, target_len, d_model) @ (d_model, d_model) -> (batch, target_len, d_model)
+                projected = torch.matmul(attended, self.fusion_weights[i])
+
+                # Add to the fused output
+                fused = fused + projected
+                used_encoder_indices.append(i)
+
+        # Apply bias if any encoders were used
+        if used_encoder_indices:
+            # Average the projections and add bias
+            fused = fused / len(used_encoder_indices) + self.fusion_bias
+
+        # Apply residual connection, dropout, and normalization
+        output = self.norm(query + self.dropout(fused))
 
         return output

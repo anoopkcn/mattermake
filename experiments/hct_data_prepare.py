@@ -59,24 +59,18 @@ def process_dataframe(
     train_ratio: float = 0.8,
     val_ratio: float = 0.1,
     test_ratio: float = 0.1,
-    batch_size: int = 1000,
     vocab_size: int = VOCAB_SIZE,
 ):
-    """Process dataframe and split into train/val/test sets."""
+    """Process dataframe and split into train/val/test sets, saving a single file per split."""
     assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6, "Ratios must sum to 1"
     
     log.info(f"Processing dataframe with {len(df)} entries")
     log.info(f"Output will be saved to {output_dir}")
     log.info(f"Split ratios: train={train_ratio}, val={val_ratio}, test={test_ratio}")
     
-    # Create output directories
+    # Create output directory
     output_path = Path(output_dir)
-    train_dir = output_path / "train"
-    val_dir = output_path / "val"
-    test_dir = output_path / "test"
-    
-    for dir_path in [train_dir, val_dir, test_dir]:
-        dir_path.mkdir(exist_ok=True, parents=True)
+    output_path.mkdir(exist_ok=True, parents=True)
     
     # Shuffle and split the dataframe
     df = df.sample(frac=1, random_state=42).reset_index(drop=True)
@@ -93,35 +87,38 @@ def process_dataframe(
     
     # Process each split
     splits = [
-        ("train", train_df, train_dir),
-        ("validation", val_df, val_dir),
-        ("test", test_df, test_dir)
+        ("train", train_df),
+        ("val", val_df),
+        ("test", test_df)
     ]
     
-    for split_name, split_df, split_dir in splits:
+    for split_name, split_df in splits:
         log.info(f"Processing {split_name} set with {len(split_df)} structures")
         
-        # Process in batches to avoid memory issues with large datasets
-        total_processed = 0
-        for batch_idx in range(0, len(split_df), batch_size):
-            batch_df = split_df.iloc[batch_idx:batch_idx + batch_size]
-            batch_data = []
-            
-            # Process each structure in this batch
-            for _, row in tqdm(batch_df.iterrows(), total=len(batch_df)):
-                material_id = row["material_id"]
-                cif_string = row["cif"]
-                processed = process_structure(material_id, cif_string, vocab_size)
-                if processed:
-                    batch_data.append(processed)
-            
-            if batch_data:
-                batch_file = split_dir / f"batch_{batch_idx // batch_size}.pt"
-                torch.save(batch_data, batch_file)
-                log.info(f"Saved {len(batch_data)} structures to {batch_file}")
-                total_processed += len(batch_data)
+        # Create a list to hold all processed structures
+        all_structures = []
+        processed_count = 0
         
-        log.info(f"Finished processing {split_name} set. Total processed: {total_processed}")
+        # Process each structure 
+        for _, row in tqdm(split_df.iterrows(), total=len(split_df)):
+            material_id = row["material_id"]
+            cif_string = row["cif"]
+            processed = process_structure(material_id, cif_string, vocab_size)
+            
+            if processed:
+                all_structures.append(processed)
+                processed_count += 1
+                
+                # Log progress every 100 structures
+                if processed_count % 100 == 0:
+                    log.info(f"Processed {processed_count}/{len(split_df)} structures in {split_name} set")
+        
+        # Save all structures for this split to a single file
+        output_file = output_path / f"{split_name}.pt"
+        log.info(f"Saving {len(all_structures)} processed structures to {output_file}")
+        torch.save(all_structures, output_file)
+        
+        log.info(f"Finished processing {split_name} set. Total processed: {len(all_structures)}")
     
     return {
         "train": len(train_df),
@@ -176,12 +173,7 @@ if __name__ == "__main__":
         default=0.1,
         help="Ratio of data to use for testing",
     )
-    parser.add_argument(
-        "--batch_size",
-        type=int,
-        default=1000,
-        help="Number of structures to process in each batch",
-    )
+    # Batch size parameter removed as we're saving individual files
     args = parser.parse_args()
 
     log.info("Starting data preparation process")
@@ -211,6 +203,5 @@ if __name__ == "__main__":
         train_ratio=args.train_ratio,
         val_ratio=args.val_ratio,
         test_ratio=args.test_ratio,
-        batch_size=args.batch_size,
         vocab_size=args.vocab_size
     )

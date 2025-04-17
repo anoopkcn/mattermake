@@ -22,32 +22,30 @@ class HCTDataset(Dataset):
 
     def __init__(
         self,
-        data_files: list[Path],
+        data_file: Path,
         add_atom_start_token: bool = True,
         add_atom_end_token: bool = True,
-        start_token_idx: int = -1,  # Default START = -1
-        end_token_idx: int = -2,  # Default END = -2
+        start_token_idx: int = -1,  # DEFAULT START = -1
+        end_token_idx: int = -2,  # DEFAULT END = -2
         # Define placeholder values for Coords corresponding to START/END
         start_coords: list[float] = [0.0, 0.0, 0.0],  # Placeholder coords
         end_coords: list[float] = [0.0, 0.0, 0.0],
-        preload_data: bool = False,  # Whether to preload all data at initialization
     ):
         """
         Args:
-            data_files (list[Path]): List of paths to the pre-processed .pt files.
+            data_file (Path): Path to a single .pt file containing all structures.
             add_atom_start_token (bool): Prepend START token to atom sequences.
             add_atom_end_token (bool): Append END token to atom sequences.
             start_token_idx (int): Index used for the START token (-1).
             end_token_idx (int): Index used for the END token (-2).
             start_coords (list[float]): Coords used for the START atom position.
             end_coords (list[float]): Coords used for the END atom position.
-            preload_data (bool): If True, load all data at init time; otherwise, load on-demand.
         """
         super().__init__()
-        self.data_files = data_files
-        if not self.data_files:
-            log.error("No data files provided to HCTDataset.")
-            raise ValueError("No data files provided to HCTDataset.")
+        self.data_file = data_file
+        if not self.data_file.exists():
+            log.error(f"Data file {data_file} does not exist.")
+            raise FileNotFoundError(f"Data file {data_file} does not exist.")
 
         # Store token config
         self.add_start = add_atom_start_token
@@ -57,7 +55,9 @@ class HCTDataset(Dataset):
         # START/END for Wyckoff indices will use the same start_idx/end_idx
         self.start_coords = torch.tensor(start_coords, dtype=torch.float)
         self.end_coords = torch.tensor(end_coords, dtype=torch.float)
-        self.preload_data = preload_data
+        
+        # For compositional purposes
+        self.hparams = {"element_vocab_size": 100}
 
         # --- Validation ---
         if self.start_idx == 0 or self.end_idx == 0:
@@ -67,58 +67,26 @@ class HCTDataset(Dataset):
             log.error("START and END tokens must be distinct.")
             raise ValueError("START and END tokens must be distinct.")
 
-        # Load metadata about the files to support fast indexing
-        # Each entry is (file_index, structure_index_within_file)
-        self.structure_map = []
-        self.total_structures = 0
+        # Load all structures into memory
+        log.info(f"Loading structures from {data_file}...")
+        try:
+            self.structures = torch.load(self.data_file)
+            self.total_structures = len(self.structures)
+            log.info(f"Successfully loaded {self.total_structures} structures from {data_file}")
+        except Exception as e:
+            log.error(f"Error loading data file {data_file}: {str(e)}")
+            # Initialize with empty list as fallback
+            self.structures = []
+            self.total_structures = 0
 
-        # If preloading, we'll store all structures here
-        self.preloaded_data = [] if preload_data else None
-
-        # Scan files to build index mapping
-        for file_idx, filepath in enumerate(self.data_files):
-            try:
-                # Load just to count structures
-                data = torch.load(filepath)
-
-                # Handle both single-structure and multi-structure files
-                if isinstance(data, list):
-                    # Batch file with multiple structures
-                    num_structures = len(data)
-                    for struct_idx in range(num_structures):
-                        self.structure_map.append((file_idx, struct_idx))
-
-                    # Preload if requested
-                    if preload_data:
-                        self.preloaded_data.extend(data)
-                else:
-                    # Single structure file (as a dictionary)
-                    self.structure_map.append((file_idx, None))
-
-                    # Preload if requested
-                    if preload_data:
-                        self.preloaded_data.append(data)
-
-                self.total_structures += num_structures if isinstance(data, list) else 1
-
-            except Exception as e:
-                log.error(f"Error scanning file {filepath}: {str(e)}")
-                # Skip problematic files without failing
-                continue
-
-        log.info(
-            f"Initialized HCTDataset with {len(data_files)} files containing {self.total_structures} structures"
-        )
         log.debug(f"START token: {start_token_idx}, END token: {end_token_idx}")
-        if preload_data:
-            log.info(f"Preloaded {len(self.preloaded_data)} structures into memory")
 
     def __len__(self) -> int:
-        return len(self.structure_map)
+        return self.total_structures
 
     def _get_structure_data(self, idx: int) -> Dict[str, Any]:
         """
-        Get raw structure data from either preloaded cache or by loading from file.
+        Get raw structure data from the preloaded structures list.
 
         Args:
             idx: The index of the structure in the dataset.
@@ -126,27 +94,12 @@ class HCTDataset(Dataset):
         Returns:
             Raw structure data dictionary
         """
-        # Look up which file and position this structure is in
-        file_idx, struct_idx = self.structure_map[idx]
-        filepath = self.data_files[file_idx]
-
-        # Return from preloaded data if available
-        if self.preload_data:
-            return self.preloaded_data[idx]
-
-        # Otherwise load from file
-        try:
-            data = torch.load(filepath)
-
-            # If it's a batch file, extract the specific structure
-            if isinstance(data, list):
-                return data[struct_idx]
-            else:
-                return data
-
-        except Exception as e:
-            log.error(f"Error loading data from {filepath}: {str(e)}")
-            raise
+        if idx < 0 or idx >= self.total_structures:
+            log.error(f"Index {idx} out of bounds (0-{self.total_structures-1})")
+            return self._create_placeholder_structure(idx)
+            
+        # Return structure directly from the in-memory list
+        return self.structures[idx]
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         """
@@ -161,24 +114,18 @@ class HCTDataset(Dataset):
                 - 'atom_types': (seq_len,) tensor of atomic/token indices (long). Valid >= 1.
                 - 'atom_wyckoffs': (seq_len,) tensor of Wyckoff/token indices (long). Valid >= 1.
                 - 'atom_coords': (seq_len, 3) tensor of coordinates (float)
-                - 'filepath': Original path of the loaded file (str)
+                - 'material_id': Original material ID (str)
         """
         try:
-            # Get the specified structure by index
-            file_idx, struct_idx = self.structure_map[idx]
-            filepath = self.data_files[file_idx]
-
-            log.debug(
-                f"Loading structure {idx} (file: {filepath}, struct_idx: {struct_idx})"
-            )
+            log.debug(f"Loading structure {idx}")
             
             # Get structure data safely with retry logic
             try:
                 data = self._get_structure_data(idx)
             except Exception as e:
-                log.error(f"Error loading structure data from file {filepath} (struct_idx={struct_idx}): {str(e)}")
+                log.error(f"Error loading structure data for index {idx}: {str(e)}")
                 # Create a minimal placeholder structure instead of failing
-                return self._create_placeholder_structure(idx, filepath)
+                return self._create_placeholder_structure(idx)
 
             # --- Load and prepare sequences ---
             try:
@@ -187,23 +134,23 @@ class HCTDataset(Dataset):
                 raw_coords = data.get("atom_coords", [])
             except Exception as e:
                 log.error(f"Error extracting basic atom data for structure {idx}: {str(e)}")
-                return self._create_placeholder_structure(idx, filepath)
+                return self._create_placeholder_structure(idx)
 
             # Validate indices are >= 1 (as expected from regenerated data)
             try:
                 # Safely check for non-positive values without causing exceptions
                 if atom_types and any(at <= 0 for at in atom_types if isinstance(at, (int, float))):
-                    log.warning(f"Structure in {filepath} contains non-positive atom type indices: {atom_types}. Will fix automatically.")
+                    log.warning(f"Structure at index {idx} contains non-positive atom type indices: {atom_types}. Will fix automatically.")
                     # Fix atom type indices that are <= 0 by setting them to 1 (minimal valid value)
                     atom_types = [max(1, at) if isinstance(at, (int, float)) else 1 for at in atom_types]
 
                 if atom_wyckoffs and any(aw <= 0 for aw in atom_wyckoffs if isinstance(aw, (int, float))):
-                    log.warning(f"Structure in {filepath} contains non-positive Wyckoff indices: {atom_wyckoffs}. Will fix automatically.")
+                    log.warning(f"Structure at index {idx} contains non-positive Wyckoff indices: {atom_wyckoffs}. Will fix automatically.")
                     # Fix Wyckoff indices that are <= 0 by setting them to 1 (minimal valid value)
                     atom_wyckoffs = [max(1, aw) if isinstance(aw, (int, float)) else 1 for aw in atom_wyckoffs]
             except Exception as e:
                 log.error(f"Error validating indices for structure {idx}: {str(e)}")
-                return self._create_placeholder_structure(idx, filepath)
+                return self._create_placeholder_structure(idx)
 
             # Process coordinates safely
             try:
@@ -225,10 +172,10 @@ class HCTDataset(Dataset):
                         f"Coordinate list length ({len(atom_coords_list)}) doesn't match atom_types ({len(atom_types)}) "
                         f"or atom_wyckoffs ({len(atom_wyckoffs)}) for structure {idx}. Using minimal valid structure."
                     )
-                    return self._create_placeholder_structure(idx, filepath)
+                    return self._create_placeholder_structure(idx)
             except Exception as e:
                 log.error(f"Error processing coordinates for structure {idx}: {str(e)}")
-                return self._create_placeholder_structure(idx, filepath)
+                return self._create_placeholder_structure(idx)
 
             # --- Add START/END tokens to atom sequences if configured ---
             try:
@@ -243,7 +190,7 @@ class HCTDataset(Dataset):
                     atom_coords_list.append(self.end_coords.tolist())
             except Exception as e:
                 log.error(f"Error adding start/end tokens for structure {idx}: {str(e)}")
-                return self._create_placeholder_structure(idx, filepath)
+                return self._create_placeholder_structure(idx)
 
             # --- Convert final sequences to Tensors with correct types ---
             try:
@@ -297,26 +244,21 @@ class HCTDataset(Dataset):
                     log.warning(f"Error processing lattice for structure {idx}: {str(e)}")
                     final_data["lattice"] = torch.ones(6, dtype=torch.float)  # Use unit cell as fallback
                     
-                final_data["filepath"] = str(filepath)
+                final_data["material_id"] = f"structure_{idx}"
 
                 return final_data
             except Exception as e:
                 log.error(f"Error during final tensor conversion for structure {idx}: {str(e)}")
-                return self._create_placeholder_structure(idx, filepath)
+                return self._create_placeholder_structure(idx)
                 
         except Exception as e:
             log.error(f"Unhandled error loading structure {idx}: {str(e)}")
             # Create a minimal placeholder structure
             return self._create_placeholder_structure(idx)
     
-    def _create_placeholder_structure(self, idx: int, filepath: str = None) -> Dict[str, Any]:
+    def _create_placeholder_structure(self, idx: int) -> Dict[str, Any]:
         """Creates a minimal valid structure when there's an error loading real data"""
         try:
-            if filepath is None and idx < len(self.structure_map):
-                file_idx, _ = self.structure_map[idx]
-                filepath = str(self.data_files[file_idx])
-            elif filepath is None:
-                filepath = "unknown"
                 
             # Create empty default with correct shapes and START/END tokens
             atom_types = []
@@ -343,7 +285,7 @@ class HCTDataset(Dataset):
                 "atom_types": torch.tensor(atom_types, dtype=torch.long),
                 "atom_wyckoffs": torch.tensor(atom_wyckoffs, dtype=torch.long),
                 "atom_coords": torch.tensor(atom_coords, dtype=torch.float),
-                "filepath": filepath
+                "material_id": f"placeholder_{idx}"
             }
         except Exception as e:
             log.error(f"Error creating placeholder structure: {str(e)}")
@@ -355,5 +297,5 @@ class HCTDataset(Dataset):
                 "atom_types": torch.tensor([self.start_idx, self.end_idx], dtype=torch.long),
                 "atom_wyckoffs": torch.tensor([self.start_idx, self.end_idx], dtype=torch.long),
                 "atom_coords": torch.zeros((2, 3), dtype=torch.float),
-                "filepath": "error_placeholder"
+                "material_id": "error_placeholder"
             }

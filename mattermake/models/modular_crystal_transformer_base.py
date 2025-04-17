@@ -1,23 +1,21 @@
-# modular_crystal_transformer_base.py
-
 import torch
 import torch.nn as nn
 import math
 from typing import Dict, Any, Optional
 
-from .components.modular_encoders import (
+from mattermake.models.components.modular_encoders import (
     CompositionEncoder,
     SpaceGroupEncoder,
     LatticeEncoder,
     # Import other encoders here if added later
 )
-from .components.modular_decoders import (
-    TypeDecoder,
-    CoordinateDecoder,
+from mattermake.models.components.modular_decoders import (
+    AtomTypeDecoder,
+    AtomCoordinateDecoder,
     DecoderRegistry,
     # Import other decoders here if added later
 )
-from .components.modular_attention import ModularCrossAttention
+from mattermake.models.components.modular_attention import ModularCrossAttention
 
 
 # Re-use PositionalEncoding if it's defined elsewhere, or define it here
@@ -122,9 +120,7 @@ class ModularCrystalTransformerBase(nn.Module):
             elif name == "spacegroup":
                 self.encoders[name] = SpaceGroupEncoder(
                     sg_vocab_size=config.get("vocab_size", sg_vocab_size),
-                    sg_embed_dim=config.get(
-                        "embed_dim", 64
-                    ),
+                    sg_embed_dim=config.get("embed_dim", 64),
                     d_model=d_model,
                 )
             elif name == "lattice":
@@ -155,13 +151,15 @@ class ModularCrystalTransformerBase(nn.Module):
         # wyckoff_embedding REMOVED
 
         # Combine atom step info (type emb + coords) and project # MODIFIED
-        atom_step_dim = type_embed_dim + 3 # REMOVED wyckoff_embed_dim
+        atom_step_dim = type_embed_dim + 3  # REMOVED wyckoff_embed_dim
         self.atom_input_proj = nn.Linear(atom_step_dim, d_model)
         self.atom_pos_encoder = PositionalEncoding(d_model, dropout)
 
         # --- Create Prediction Heads ---
         # Space Group Head
-        self.sg_head = nn.Linear(d_model, 230) # Direct size based on target range 0-229
+        self.sg_head = nn.Linear(
+            d_model, 230
+        )  # Direct size based on target range 0-229
 
         # Lattice Head
         self.lattice_head = nn.Linear(d_model, 6 * 2)  # mean + log_var per param
@@ -170,34 +168,36 @@ class ModularCrystalTransformerBase(nn.Module):
         nn.init.zeros_(self.lattice_head.bias)
 
         # --- Initialize Modular Decoders ---
-        decoder_configs = kwargs.get("decoder_configs", {
-            "type": {"vocab_size": self.effective_type_vocab_size},
-            "coordinate": {"eps": eps}
-        })
-        
+        decoder_configs = kwargs.get(
+            "decoder_configs",
+            {
+                "type": {"vocab_size": self.effective_type_vocab_size},
+                "coordinate": {"eps": eps},
+            },
+        )
+
         # Create decoders
         decoders = {}
         for name, config in decoder_configs.items():
             # Ensure config is a dictionary even if it's None
             config = config if config is not None else {}
-            
+
             if name == "type":
                 # Use 'atom_type' as the key to avoid conflict with Python's built-in 'type'
-                decoders["atom_type"] = TypeDecoder(
+                decoders["atom_type"] = AtomTypeDecoder(
                     d_model=d_model,
-                    vocab_size=config.get("vocab_size", self.effective_type_vocab_size)
+                    vocab_size=config.get("vocab_size", self.effective_type_vocab_size),
                 )
             elif name == "coordinate":
-                decoders[name] = CoordinateDecoder(
-                    d_model=d_model,
-                    eps=config.get("eps", eps)
+                decoders[name] = AtomCoordinateDecoder(
+                    d_model=d_model, eps=config.get("eps", eps)
                 )
             else:
                 print(f"Warning: Unknown decoder type '{name}' in config. Skipping.")
-        
+
         # Create decoder registry
         self.decoder_registry = DecoderRegistry(decoders)
-        
+
         # Modular decoders completely replace the need for separate prediction heads
 
         # --- Create Attention Mechanisms & Atom Decoder ---
@@ -210,35 +210,38 @@ class ModularCrystalTransformerBase(nn.Module):
         )
         # Separate attention for lattice prediction (uses only base encoders)
         self.lattice_modular_cross_attn = ModularCrossAttention(
-            encoder_names=list(self.encoders.keys()), # ONLY base encoders
+            encoder_names=list(self.encoders.keys()),  # ONLY base encoders
             d_model=d_model,
             nhead=nhead,
-            dropout=dropout
+            dropout=dropout,
         )
         # Separate attention for atom decoding (includes lattice context)
         # Include all encoder outputs without duplications
         atom_encoder_names = list(self.encoders.keys())
-            
+
         self.atom_modular_cross_attn = ModularCrossAttention(
-             encoder_names=atom_encoder_names, # Base encoders + lattice contexts
-             d_model=d_model,
-             nhead=nhead,
-             dropout=dropout
+            encoder_names=atom_encoder_names,  # Base encoders + lattice contexts
+            d_model=d_model,
+            nhead=nhead,
+            dropout=dropout,
         )
         # Standard decoder stack
         self.atom_decoder = nn.TransformerDecoder(
             self.atom_decoder_layer, num_layers=num_atom_decoder_layers
         )
 
-
     def _map_indices_for_embedding(
-        self, indices: torch.Tensor, is_type: bool = True # Default to True
+        self,
+        indices: torch.Tensor,
+        is_type: bool = True,  # Default to True
     ) -> torch.Tensor:
         """Maps PAD, START, END indices to non-negative indices for embedding lookup."""
         # **MODIFIED:** Simplified for type only
         if not is_type:
             # This case should no longer occur
-            raise ValueError("_map_indices_for_embedding called for non-type, but wyckoff is removed.")
+            raise ValueError(
+                "_map_indices_for_embedding called for non-type, but wyckoff is removed."
+            )
 
         indices = indices.long()
         start_embed_idx = self.type_start_embed_idx
@@ -249,7 +252,6 @@ class ModularCrystalTransformerBase(nn.Module):
         mapped_indices[indices == self.end_idx] = end_embed_idx
         return mapped_indices
 
-
     def forward(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         """Teacher forcing forward pass for training"""
 
@@ -259,7 +261,7 @@ class ModularCrystalTransformerBase(nn.Module):
         # Check for NaNs in composition
         if torch.isnan(composition).any():
             composition = torch.nan_to_num(composition, nan=0.0)
-            
+
         sg_target = batch["spacegroup"]
 
         for name, encoder in self.encoders.items():
@@ -268,22 +270,30 @@ class ModularCrystalTransformerBase(nn.Module):
                     output = encoder(composition)
                     # Check for NaNs in encoder output
                     if torch.isnan(output).any():
-                        output = torch.nan_to_num(output, nan=0.0, posinf=1e6, neginf=-1e6)
+                        output = torch.nan_to_num(
+                            output, nan=0.0, posinf=1e6, neginf=-1e6
+                        )
                     encoder_outputs[name] = output
                 elif isinstance(encoder, SpaceGroupEncoder):
                     output = encoder(sg_target)
                     # Check for NaNs in encoder output
                     if torch.isnan(output).any():
-                        output = torch.nan_to_num(output, nan=0.0, posinf=1e6, neginf=-1e6)
+                        output = torch.nan_to_num(
+                            output, nan=0.0, posinf=1e6, neginf=-1e6
+                        )
                     encoder_outputs[name] = output
-                elif name in batch: # Generic fallback
+                elif name in batch:  # Generic fallback
                     output = encoder(batch[name])
                     # Check for NaNs in encoder output
                     if torch.isnan(output).any():
-                        output = torch.nan_to_num(output, nan=0.0, posinf=1e6, neginf=-1e6)
+                        output = torch.nan_to_num(
+                            output, nan=0.0, posinf=1e6, neginf=-1e6
+                        )
                     encoder_outputs[name] = output
                 else:
-                    print(f"Warning: Input for encoder '{name}' not found in batch. Skipping.")
+                    print(
+                        f"Warning: Input for encoder '{name}' not found in batch. Skipping."
+                    )
             except Exception as e:
                 print(f"Error in encoder '{name}': {e}")
                 # Create a safe dummy tensor as fallback
@@ -295,45 +305,58 @@ class ModularCrystalTransformerBase(nn.Module):
             # Check for NaNs in composition encoder output
             comp_output = encoder_outputs["composition"]
             if torch.isnan(comp_output).any():
-                comp_output = torch.nan_to_num(comp_output, nan=0.0, posinf=1e6, neginf=-1e6)
+                comp_output = torch.nan_to_num(
+                    comp_output, nan=0.0, posinf=1e6, neginf=-1e6
+                )
                 encoder_outputs["composition"] = comp_output
-            
+
             sg_logits = self.sg_head(comp_output.squeeze(1))
             # Check for NaNs in sg_logits
             if torch.isnan(sg_logits).any():
                 sg_logits = torch.nan_to_num(sg_logits, nan=0.0)
         else:
-            sg_logits = torch.zeros((composition.size(0), 230), device=self.device) # Use 230
+            sg_logits = torch.zeros(
+                (composition.size(0), 230), device=self.device
+            )  # Use 230
 
         # --- Step 3: Predict Lattice ---
-        lattice_query = encoder_outputs.get("composition", torch.zeros((composition.size(0), 1, self.d_model), device=self.device))
+        lattice_query = encoder_outputs.get(
+            "composition",
+            torch.zeros((composition.size(0), 1, self.d_model), device=self.device),
+        )
         # Check lattice query for NaNs
         if torch.isnan(lattice_query).any():
             lattice_query = torch.nan_to_num(lattice_query, nan=0.0)
-        
+
         # Ensure all encoder outputs are NaN-free before cross-attention
         clean_encoder_outputs = {}
         for name, tensor in encoder_outputs.items():
             if torch.isnan(tensor).any():
-                clean_encoder_outputs[name] = torch.nan_to_num(tensor, nan=0.0, posinf=1e6, neginf=-1e6)
+                clean_encoder_outputs[name] = torch.nan_to_num(
+                    tensor, nan=0.0, posinf=1e6, neginf=-1e6
+                )
             else:
                 clean_encoder_outputs[name] = tensor
-        
+
         fused_context_for_lattice = self.lattice_modular_cross_attn(
             query=lattice_query, encoder_outputs=clean_encoder_outputs
         )
-        
+
         # Check fused context for NaNs
         if torch.isnan(fused_context_for_lattice).any():
-            fused_context_for_lattice = torch.nan_to_num(fused_context_for_lattice, nan=0.0, posinf=1e6, neginf=-1e6)
+            fused_context_for_lattice = torch.nan_to_num(
+                fused_context_for_lattice, nan=0.0, posinf=1e6, neginf=-1e6
+            )
         lattice_params = self.lattice_head(fused_context_for_lattice.squeeze(1))
-        
+
         # Apply gradient clipping to prevent NaN values
         lattice_params = torch.clamp(lattice_params, -1e6, 1e6)
         # Check for NaNs and replace them
-        lattice_params = torch.nan_to_num(lattice_params, nan=0.0, posinf=1e6, neginf=-1e6)
+        lattice_params = torch.nan_to_num(
+            lattice_params, nan=0.0, posinf=1e6, neginf=-1e6
+        )
         lattice_mean, lattice_log_var = torch.chunk(lattice_params, 2, dim=-1)
-        
+
         # Ensure numerical stability for log_var
         lattice_log_var = torch.clamp(lattice_log_var, -20, 2)
 
@@ -342,7 +365,7 @@ class ModularCrystalTransformerBase(nn.Module):
         # Check lattice_target for NaNs
         if torch.isnan(lattice_target).any():
             lattice_target = torch.nan_to_num(lattice_target, nan=0.0)
-        
+
         # Process lattice using the lattice encoder
         if "lattice" in self.encoders:
             # Use the encoder to get a more sophisticated representation
@@ -353,8 +376,10 @@ class ModularCrystalTransformerBase(nn.Module):
             # Create a fallback representation if encoder is missing
             # This avoids errors if configuration doesn't include lattice encoder
             dummy_shape = [lattice_target.size(0), 1, self.d_model]
-            clean_encoder_outputs["lattice"] = torch.zeros(dummy_shape, device=self.device)
-        
+            clean_encoder_outputs["lattice"] = torch.zeros(
+                dummy_shape, device=self.device
+            )
+
         # Create decoder contexts with clean encoder outputs
         decoder_contexts = clean_encoder_outputs.copy()
 
@@ -363,7 +388,7 @@ class ModularCrystalTransformerBase(nn.Module):
         # atom_wyckoffs_target REMOVED
         atom_coords_target = batch["atom_coords"]
         atom_mask = batch["atom_mask"]
-        
+
         # Check for NaNs in coordinates
         if torch.isnan(atom_coords_target).any():
             atom_coords_target = torch.nan_to_num(atom_coords_target, nan=0.0)
@@ -379,7 +404,9 @@ class ModularCrystalTransformerBase(nn.Module):
         # wyckoffs_embed_idx REMOVED
 
         # Clamp indices
-        types_embed_idx_clamped = torch.clamp(types_embed_idx, 0, self.effective_type_vocab_size - 1)
+        types_embed_idx_clamped = torch.clamp(
+            types_embed_idx, 0, self.effective_type_vocab_size - 1
+        )
         # wyckoffs_embed_idx_clamped REMOVED
 
         type_embeds = self.type_embedding(types_embed_idx_clamped)
@@ -391,37 +418,45 @@ class ModularCrystalTransformerBase(nn.Module):
         # Check atom coords for NaNs
         if torch.isnan(atom_coords_input).any():
             atom_coords_input = torch.nan_to_num(atom_coords_input, nan=0.0)
-            
+
         # Combine atom step inputs (Type + Coords only)
-        atom_step_inputs = torch.cat([type_embeds, atom_coords_input], dim=-1) # MODIFIED
+        atom_step_inputs = torch.cat(
+            [type_embeds, atom_coords_input], dim=-1
+        )  # MODIFIED
         atom_decoder_input = self.atom_input_proj(atom_step_inputs)
-        
+
         # Check for NaNs in decoder input
         if torch.isnan(atom_decoder_input).any():
             atom_decoder_input = torch.nan_to_num(atom_decoder_input, nan=0.0)
 
         # Add Positional Encoding
-        atom_decoder_input_pos = self.atom_pos_encoder(atom_decoder_input.permute(1, 0, 2)).permute(1, 0, 2)
-        
+        atom_decoder_input_pos = self.atom_pos_encoder(
+            atom_decoder_input.permute(1, 0, 2)
+        ).permute(1, 0, 2)
+
         # Check for NaNs after positional encoding
         if torch.isnan(atom_decoder_input_pos).any():
             atom_decoder_input_pos = torch.nan_to_num(atom_decoder_input_pos, nan=0.0)
 
         # Prepare Masks for Atom Decoder
         tgt_len = atom_decoder_input_pos.size(1)
-        if tgt_len <= 0: # Handle empty sequences
-             batch_size = atom_decoder_input_pos.size(0)
-             return {
-                 "sg_logits": sg_logits,
-                 "lattice_mean": lattice_mean,
-                 "lattice_log_var": lattice_log_var,
-                 "type_logits": torch.zeros((batch_size, 0, self.effective_type_vocab_size), device=self.device),
-                 # "wyckoff_logits": REMOVED
-                 "coord_mean": torch.zeros((batch_size, 0, 3), device=self.device),
-                 "coord_log_var": torch.zeros((batch_size, 0, 3), device=self.device),
-             }
+        if tgt_len <= 0:  # Handle empty sequences
+            batch_size = atom_decoder_input_pos.size(0)
+            return {
+                "sg_logits": sg_logits,
+                "lattice_mean": lattice_mean,
+                "lattice_log_var": lattice_log_var,
+                "type_logits": torch.zeros(
+                    (batch_size, 0, self.effective_type_vocab_size), device=self.device
+                ),
+                # "wyckoff_logits": REMOVED
+                "coord_mean": torch.zeros((batch_size, 0, 3), device=self.device),
+                "coord_log_var": torch.zeros((batch_size, 0, 3), device=self.device),
+            }
 
-        tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt_len).to(self.device)
+        tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt_len).to(
+            self.device
+        )
         tgt_key_padding_mask = ~atom_mask_input
 
         # --- Run Atom Decoder ---
@@ -430,10 +465,12 @@ class ModularCrystalTransformerBase(nn.Module):
         clean_decoder_contexts = {}
         for name, tensor in decoder_contexts.items():
             if torch.isnan(tensor).any():
-                clean_decoder_contexts[name] = torch.nan_to_num(tensor, nan=0.0, posinf=1e6, neginf=-1e6)
+                clean_decoder_contexts[name] = torch.nan_to_num(
+                    tensor, nan=0.0, posinf=1e6, neginf=-1e6
+                )
             else:
                 clean_decoder_contexts[name] = tensor
-        
+
         # Apply attention with additional gradient clipping
         with torch.no_grad():
             # Temporarily set to evaluation mode to minimize chance of NaNs
@@ -445,16 +482,18 @@ class ModularCrystalTransformerBase(nn.Module):
                     encoder_outputs=clean_decoder_contexts,
                 )
                 # Aggressively ensure no NaNs in fused memory
-                fused_memory = torch.nan_to_num(fused_memory, nan=0.0, posinf=1e6, neginf=-1e6)
+                fused_memory = torch.nan_to_num(
+                    fused_memory, nan=0.0, posinf=1e6, neginf=-1e6
+                )
             finally:
                 # Restore previous training mode
                 if training_mode:
                     self.train()
-        
+
         # Double-check for NaNs in fused memory
         if torch.isnan(fused_memory).any():
             fused_memory = torch.zeros_like(fused_memory)
-        
+
         # Ensure masks have the same dtype to avoid the warning
         # Convert tgt_mask to boolean if tgt_key_padding_mask is boolean
         if tgt_key_padding_mask.dtype == torch.bool and tgt_mask.dtype != torch.bool:
@@ -462,8 +501,8 @@ class ModularCrystalTransformerBase(nn.Module):
             if (tgt_mask == 0).any() or (tgt_mask == 1).any():  # 0s and 1s format
                 tgt_mask = tgt_mask.to(torch.bool)
             else:  # -inf and 0s format
-                tgt_mask = (tgt_mask == 0)  # Only 0s will become True
-        
+                tgt_mask = tgt_mask == 0  # Only 0s will become True
+
         # Feed fused representation into the standard decoder stack.
         atom_decoder_output = self.atom_decoder(
             tgt=atom_decoder_input_pos,
@@ -472,20 +511,28 @@ class ModularCrystalTransformerBase(nn.Module):
             tgt_key_padding_mask=tgt_key_padding_mask,
             memory_key_padding_mask=tgt_key_padding_mask,
         )
-        
+
         # Final check for NaNs in decoder output
         if torch.isnan(atom_decoder_output).any():
-            atom_decoder_output = torch.nan_to_num(atom_decoder_output, nan=0.0, posinf=1e6, neginf=-1e6)
+            atom_decoder_output = torch.nan_to_num(
+                atom_decoder_output, nan=0.0, posinf=1e6, neginf=-1e6
+            )
 
         # --- Atom Prediction using Modular Decoders ---
         # Check for NaNs in decoder output
-        atom_decoder_output = torch.nan_to_num(atom_decoder_output, nan=0.0, posinf=1e6, neginf=-1e6)
-        
+        atom_decoder_output = torch.nan_to_num(
+            atom_decoder_output, nan=0.0, posinf=1e6, neginf=-1e6
+        )
+
         # Process through decoder registry
-        predictions_from_registry = self.decoder_registry(atom_decoder_output, decoder_contexts, atom_mask_input)
-        
+        predictions_from_registry = self.decoder_registry(
+            atom_decoder_output, decoder_contexts, atom_mask_input
+        )
+
         # Extract predictions directly from decoder registry
-        type_logits = predictions_from_registry["type_logits"]  # This key is produced by TypeDecoder
+        type_logits = predictions_from_registry[
+            "type_logits"
+        ]  # This key is produced by TypeDecoder
         coord_mean = predictions_from_registry["coord_mean"]
         coord_log_var = predictions_from_registry["coord_log_var"]
 
@@ -499,10 +546,10 @@ class ModularCrystalTransformerBase(nn.Module):
             "coord_mean": coord_mean,
             "coord_log_var": coord_log_var,
         }
-        
+
         # Add any other model outputs to predictions if needed
         # (currently none needed beyond the standard outputs)
-            
+
         return predictions
 
     @property
@@ -510,22 +557,21 @@ class ModularCrystalTransformerBase(nn.Module):
         try:
             return next(self.parameters()).device
         except StopIteration:
-            return torch.device("cpu") # Default to CPU
-
+            return torch.device("cpu")  # Default to CPU
 
     @torch.no_grad()
     def generate(
         self,
         # --- Required Inputs for Encoders ---
-        composition: torch.Tensor, # (1, V_elem)
+        composition: torch.Tensor,  # (1, V_elem)
         # --- Optional Inputs for other potential encoders ---
-        spacegroup: Optional[torch.Tensor] = None, # Example: (1, 1)
+        spacegroup: Optional[torch.Tensor] = None,  # Example: (1, 1)
         # Add other conditioning inputs required by active encoders...
         # --- Generation Parameters ---
         max_atoms: int = 50,
         sg_sampling_mode: str = "sample",
         lattice_sampling_mode: str = "sample",
-        atom_discrete_sampling_mode: str = "sample", # For type sampling
+        atom_discrete_sampling_mode: str = "sample",  # For type sampling
         coord_sampling_mode: str = "sample",
         temperature: float = 1.0,
         # --- Explicit Start Tokens (Optional) ---
@@ -534,16 +580,22 @@ class ModularCrystalTransformerBase(nn.Module):
         start_coord_token: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
         """Autoregressive generation (sampling) using modular encoders. (Wyckoff removed)"""
-        from torch.distributions import Normal # Local import
+        from torch.distributions import Normal  # Local import
 
         bs = composition.size(0)
         if bs != 1:
             raise NotImplementedError("Batch generation not yet supported.")
 
         device = self.device
-        start_type_token = start_type_token if start_type_token is not None else self.start_idx
+        start_type_token = (
+            start_type_token if start_type_token is not None else self.start_idx
+        )
         # start_wyckoff_token REMOVED
-        start_coord_token = start_coord_token if start_coord_token is not None else torch.zeros(bs, 1, 3, device=device)
+        start_coord_token = (
+            start_coord_token
+            if start_coord_token is not None
+            else torch.zeros(bs, 1, 3, device=device)
+        )
 
         # --- Step 1: Run all registered encoders ---
         encoder_batch = {"composition": composition}
@@ -559,7 +611,7 @@ class ModularCrystalTransformerBase(nn.Module):
         # --- Step 2: Predict and Sample Space Group ---
         comp_output = encoder_outputs["composition"].to(device)
         sg_logits = self.sg_head(comp_output.squeeze(1))
-        if sg_sampling_mode == 'argmax':
+        if sg_sampling_mode == "argmax":
             sg_sampled_idx = torch.argmax(sg_logits, dim=-1)
         else:
             sg_probs = torch.softmax(sg_logits / temperature, dim=-1)
@@ -574,16 +626,17 @@ class ModularCrystalTransformerBase(nn.Module):
             encoder_outputs["spacegroup"] = sg_context
 
         # --- Step 3: Predict and Sample Lattice ---
-        lattice_query = encoder_outputs.get("composition", torch.zeros((bs, 1, self.d_model), device=device)).to(device)
+        lattice_query = encoder_outputs.get(
+            "composition", torch.zeros((bs, 1, self.d_model), device=device)
+        ).to(device)
         encoder_outputs_device = {k: v.to(device) for k, v in encoder_outputs.items()}
         fused_context_for_lattice = self.lattice_modular_cross_attn(
-             query=lattice_query,
-             encoder_outputs=encoder_outputs_device
+            query=lattice_query, encoder_outputs=encoder_outputs_device
         )
         lattice_params = self.lattice_head(fused_context_for_lattice.squeeze(1))
         lattice_mean, lattice_log_var = torch.chunk(lattice_params, 2, dim=-1)
 
-        if lattice_sampling_mode == 'mean':
+        if lattice_sampling_mode == "mean":
             lattice_sampled = lattice_mean
         else:
             lattice_std = torch.exp(0.5 * lattice_log_var)
@@ -601,12 +654,14 @@ class ModularCrystalTransformerBase(nn.Module):
             # This avoids errors if configuration doesn't include lattice encoder
             dummy_shape = [bs, 1, self.d_model]
             encoder_outputs["lattice"] = torch.zeros(dummy_shape, device=device)
-        
+
         # Create decoder contexts
         decoder_contexts = {k: v.to(device) for k, v in encoder_outputs.items()}
 
         # --- Step 4: Autoregressive Atom Sequence Generation ---
-        current_type = torch.tensor([[start_type_token]], device=device, dtype=torch.long)
+        current_type = torch.tensor(
+            [[start_type_token]], device=device, dtype=torch.long
+        )
         # current_wyckoff REMOVED
         current_coords = start_coord_token.to(device)
 
@@ -627,47 +682,56 @@ class ModularCrystalTransformerBase(nn.Module):
             # wyckoff_embed REMOVED
 
             # Combine step input (Type + Coords)
-            atom_step_inputs = torch.cat([type_embed, input_coord_seq.to(device)], dim=-1) # MODIFIED
+            atom_step_inputs = torch.cat(
+                [type_embed, input_coord_seq.to(device)], dim=-1
+            )  # MODIFIED
             atom_decoder_input = self.atom_input_proj(atom_step_inputs)
 
             # Positional encoding
-            pos_encoded_input = self.atom_pos_encoder(atom_decoder_input.permute(1,0,2)).permute(1,0,2)
+            pos_encoded_input = self.atom_pos_encoder(
+                atom_decoder_input.permute(1, 0, 2)
+            ).permute(1, 0, 2)
 
             # Fused context
             fused_memory = self.atom_modular_cross_attn(
-                query=pos_encoded_input.to(device),
-                encoder_outputs=decoder_contexts
+                query=pos_encoded_input.to(device), encoder_outputs=decoder_contexts
             )
 
             # Atom Decoder Step
             tgt_len = pos_encoded_input.size(1)
-            tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt_len).to(device)
+            tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt_len).to(
+                device
+            )
             atom_decoder_output = self.atom_decoder(
                 tgt=pos_encoded_input.to(device),
                 memory=fused_memory.to(device),
                 tgt_mask=tgt_mask,
             )
-            last_token_output = atom_decoder_output[:, -1, :] 
+            last_token_output = atom_decoder_output[:, -1, :]
 
             # Predict next properties
             # Check for NaNs in decoder output
-            last_token_output = torch.nan_to_num(last_token_output, nan=0.0, posinf=1e6, neginf=-1e6)
-            
+            last_token_output = torch.nan_to_num(
+                last_token_output, nan=0.0, posinf=1e6, neginf=-1e6
+            )
+
             # Process through decoders
             # Create mini batch with sequence length 1
             mini_mask = None  # No mask needed for single token
-            predictions = self.decoder_registry(last_token_output.unsqueeze(1), decoder_contexts, mini_mask)
-            
+            predictions = self.decoder_registry(
+                last_token_output.unsqueeze(1), decoder_contexts, mini_mask
+            )
+
             # Extract predictions
             type_logits = predictions["type_logits"]
             coord_mean = predictions["coord_mean"]
             coord_log_var = predictions["coord_log_var"]
-            
+
             # Final safeguard for all outputs
             type_logits = torch.nan_to_num(type_logits, nan=0.0)
             coord_mean = torch.nan_to_num(coord_mean, nan=0.5)
             coord_log_var = torch.nan_to_num(coord_log_var, nan=-3.0)
-            
+
             # If we used decoder, we need to squeeze the sequence dimension
             if type_logits.dim() > 2:
                 type_logits = type_logits.squeeze(1)
@@ -676,9 +740,9 @@ class ModularCrystalTransformerBase(nn.Module):
             if coord_log_var.dim() > 2:
                 coord_log_var = coord_log_var.squeeze(1)
 
-            # --- Sample next atom --- 
+            # --- Sample next atom ---
             # Type
-            if atom_discrete_sampling_mode == 'argmax':
+            if atom_discrete_sampling_mode == "argmax":
                 next_type_embed_idx = torch.argmax(type_logits, dim=-1, keepdim=True)
             else:
                 type_probs = torch.softmax(type_logits / temperature, dim=-1)
@@ -701,9 +765,11 @@ class ModularCrystalTransformerBase(nn.Module):
             # Wyckoff sampling REMOVED
 
             # Coordinates - using the new parameter format (no conversion needed)
-            coord_std = torch.exp(0.5 * coord_log_var).clamp(max=0.2)  # Limit standard deviation
-            
-            if coord_sampling_mode == 'mode':
+            coord_std = torch.exp(0.5 * coord_log_var).clamp(
+                max=0.2
+            )  # Limit standard deviation
+
+            if coord_sampling_mode == "mode":
                 # Just use the mean directly
                 next_coords = torch.clamp(coord_mean, min=0.0, max=1.0)
             else:
@@ -711,26 +777,32 @@ class ModularCrystalTransformerBase(nn.Module):
                 # Use reparameterization trick: μ + σ·ε where ε ~ N(0,1)
                 epsilon = torch.randn_like(coord_mean)
                 sampled = coord_mean + coord_std * epsilon
-                
+
                 # Apply modulo to handle the periodic boundary
                 next_coords = torch.remainder(sampled, 1.0)
 
             # --- Append and update ---
             generated_types.append(next_type.item())
             # generated_wyckoffs REMOVED
-            generated_coords.append(next_coords) # Keep as tensor (1, 3)
+            generated_coords.append(next_coords)  # Keep as tensor (1, 3)
 
             input_type_seq = torch.cat([input_type_seq, next_type.to(device)], dim=1)
             # input_wyckoff_seq REMOVED
-            input_coord_seq = torch.cat([input_coord_seq, next_coords.unsqueeze(1).to(device)], dim=1)
+            input_coord_seq = torch.cat(
+                [input_coord_seq, next_coords.unsqueeze(1).to(device)], dim=1
+            )
 
-        # --- Collect results --- 
+        # --- Collect results ---
         results = {
             "composition": composition.squeeze(0).cpu(),
             "spacegroup_sampled": sg_sampled.squeeze(0).cpu(),
             "lattice_sampled": lattice_sampled.squeeze(0).cpu(),
-            "atom_types_generated": torch.tensor(generated_types, dtype=torch.long, device='cpu'),
+            "atom_types_generated": torch.tensor(
+                generated_types, dtype=torch.long, device="cpu"
+            ),
             # "atom_wyckoffs_generated": REMOVED
-            "atom_coords_generated": torch.cat(generated_coords, dim=0).cpu() if generated_coords else torch.empty((0, 3), device='cpu'),
+            "atom_coords_generated": torch.cat(generated_coords, dim=0).cpu()
+            if generated_coords
+            else torch.empty((0, 3), device="cpu"),
         }
         return results

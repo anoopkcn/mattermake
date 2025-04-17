@@ -1,5 +1,3 @@
-# modular_crystal_transformer_module.py
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -205,46 +203,50 @@ class ModularCrystalTransformer(LightningModule):
             # We now directly receive mean in [0,1] range and log_variance
             coord_mean = predictions["coord_mean"]
             coord_log_var = predictions["coord_log_var"]
-            
+
             # Convert log_var to variance for calculations
             coord_variance = torch.exp(coord_log_var) + self.hparams.eps
-            
+
             # Ensure values are within reasonable ranges
             coord_mean = torch.clamp(coord_mean, min=0.0, max=1.0)
             coord_variance = torch.clamp(coord_variance, min=self.hparams.eps, max=0.1)
-            
+
             try:
                 # Use simple MSE loss weighted by precision - more stable than full NLL
                 # This treats coordinates as predictions with uncertainty
                 coord_squared_error = (coord_mean - atom_coords_target).pow(2)
-                
+
                 # Account for the periodic nature of fractional coords
                 # If error > 0.5, it's shorter to go the other way around
                 periodic_mask = coord_squared_error > 0.25  # (0.5)²
-                coord_squared_error[periodic_mask] = 1.0 - torch.sqrt(coord_squared_error[periodic_mask])
-                coord_squared_error[periodic_mask] = coord_squared_error[periodic_mask].pow(2)
-                
+                coord_squared_error[periodic_mask] = 1.0 - torch.sqrt(
+                    coord_squared_error[periodic_mask]
+                )
+                coord_squared_error[periodic_mask] = coord_squared_error[
+                    periodic_mask
+                ].pow(2)
+
                 # Weight errors by precision
                 weighted_error = coord_squared_error / coord_variance
-                
+
                 # Add log variance term (from Gaussian NLL) to prevent variance collapse
                 loss_terms = weighted_error + torch.log(coord_variance)
-                
+
                 # Apply mask and compute mean
                 mask_expanded = atom_mask_target.unsqueeze(-1).to(loss_terms.dtype)
                 masked_loss = loss_terms * mask_expanded
                 num_valid = mask_expanded.sum()
-                
+
                 if num_valid > 0:
                     coord_loss = masked_loss.sum() / (num_valid * 3)
                     # Safety clamp
                     coord_loss = torch.clamp(coord_loss, min=0.0, max=20.0)
                 else:
                     coord_loss = torch.tensor(0.0, device=self.device)
-                
+
                 losses["coord_loss"] = coord_loss * self.hparams.coord_loss_weight
                 total_loss += losses["coord_loss"]
-                
+
             except Exception as e:
                 log.warning(f"Error in coordinate loss calculation: {e}")
                 # Provide a default loss that won't break training

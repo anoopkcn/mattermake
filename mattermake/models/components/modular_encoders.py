@@ -52,12 +52,12 @@ class SpaceGroupEncoder(EncoderBase):
         # Store parameters
         self.sg_vocab_size = sg_vocab_size
         self.sg_embed_dim = sg_embed_dim
-        
+
         # Use a linear projection directly on one-hot encoded input
         # Functionally equivalent to embedding but more explicit about one-hot nature
         self.projector1 = nn.Linear(sg_vocab_size, sg_embed_dim)
         self.projector2 = nn.Linear(sg_embed_dim, d_model)
-        
+
         # Optional activation between projections
         self.activation = nn.ReLU()
 
@@ -71,21 +71,21 @@ class SpaceGroupEncoder(EncoderBase):
         # Ensure input is long type and handle squeezing
         if spacegroup.ndim > 1 and spacegroup.size(1) == 1:
             spacegroup = spacegroup.squeeze(1)
-        
+
         device = spacegroup.device
         batch_size = spacegroup.size(0)
-        
+
         # Map 1-230 to 0-229 for one-hot indexing
         sg_idx = spacegroup.long() - 1  # Map 1-230 -> 0-229
-        
+
         # Create one-hot encoding
         one_hot = torch.zeros(batch_size, self.sg_vocab_size, device=device)
         one_hot.scatter_(1, sg_idx.unsqueeze(1), 1.0)
-        
+
         # Apply projections with activation in between
         hidden = self.activation(self.projector1(one_hot))
         output = self.projector2(hidden)
-        
+
         return output.unsqueeze(1)  # (batch, 1, d_model)
 
 
@@ -99,14 +99,14 @@ class LatticeEncoder(EncoderBase):
         equivariant: bool = False,  # Start with simpler non-equivariant version
     ):
         super().__init__(d_output=d_model)
-        
+
         # Store parameters
         self.d_model = d_model
         self.latent_dim = latent_dim
-        
+
         # 6 lattice parameters (a, b, c, alpha, beta, gamma)
         input_dim = 6
-        
+
         # Option 1: Simple MLP (non-equivariant)
         if not equivariant:
             self.encoder = nn.Sequential(
@@ -114,7 +114,7 @@ class LatticeEncoder(EncoderBase):
                 nn.ReLU(),
                 nn.Linear(latent_dim, latent_dim),
                 nn.ReLU(),
-                nn.Linear(latent_dim, d_model)
+                nn.Linear(latent_dim, d_model),
             )
         # Option 2: Placeholder for future equivariant version
         else:
@@ -124,9 +124,9 @@ class LatticeEncoder(EncoderBase):
                 nn.ReLU(),
                 nn.Linear(latent_dim, latent_dim),
                 nn.ReLU(),
-                nn.Linear(latent_dim, d_model)
+                nn.Linear(latent_dim, d_model),
             )
-            
+
     def forward(self, lattice: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -137,14 +137,14 @@ class LatticeEncoder(EncoderBase):
         # Ensure input is properly shaped
         if lattice.dim() > 2:
             lattice = lattice.squeeze(1)  # Remove any singleton dimensions
-            
+
         # Apply encoder
         encoded = self.encoder(lattice)
-        
+
         # Add sequence dimension if needed
         if encoded.dim() == 2:
             encoded = encoded.unsqueeze(1)  # (batch_size, 1, d_model)
-            
+
         return encoded
 
 

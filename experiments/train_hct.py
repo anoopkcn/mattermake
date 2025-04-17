@@ -97,7 +97,26 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         else:
             ckpt_path = "best"
 
-        test_metrics = trainer.test(
+        # For testing, it's recommended to use a single device
+        # Create a copy of the trainer config with a single device
+        test_trainer_kwargs = {
+            "devices": 1,  # Use just one device
+            "num_nodes": 1,  # Use just one node
+            "strategy": None,  # No distributed strategy needed
+            # Keep other settings from original trainer
+            "callbacks": trainer.callbacks,
+            "logger": trainer.loggers,
+        }
+        
+        # Create test-specific trainer
+        log.info("Creating single-device trainer for testing...")
+        test_trainer = hydra.utils.instantiate(
+            cfg.trainer, 
+            **test_trainer_kwargs
+        )
+        
+        # Run the test with the single-device trainer
+        test_metrics = test_trainer.test(
             model=model, datamodule=datamodule, ckpt_path=ckpt_path
         )
 

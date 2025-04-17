@@ -29,53 +29,74 @@ def hct_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         Dict[str, Any]: A dictionary containing batched and padded tensors.
                         Includes 'atom_mask' for non-padded sequence elements.
     """
-    # Batch fixed-size tensors
-    composition_batch = torch.stack([item["composition"] for item in batch])
-    spacegroup_batch = torch.stack([item["spacegroup"] for item in batch])
-    lattice_batch = torch.stack([item["lattice"] for item in batch])
-    filepaths = [item["filepath"] for item in batch]
+    # Filter out None items that might have been returned from __getitem__ due to errors
+    valid_batch = [item for item in batch if item is not None]
+    
+    # If we have an empty batch after filtering, return minimal valid structure
+    if not valid_batch:
+        log.warning("Empty batch after filtering invalid items")
+        return {
+            "composition": torch.zeros((0, 100), dtype=torch.long),  # Assuming vocab_size=100
+            "spacegroup": torch.zeros((0, 1), dtype=torch.long),
+            "lattice": torch.zeros((0, 6), dtype=torch.float),
+            "atom_types": torch.zeros((0, 0), dtype=torch.long),
+            "atom_wyckoffs": torch.zeros((0, 0), dtype=torch.long),
+            "atom_coords": torch.zeros((0, 0, 3), dtype=torch.float),
+            "atom_mask": torch.zeros((0, 0), dtype=torch.bool),
+            "lengths": torch.zeros((0,), dtype=torch.long),
+            "filepaths": [],
+        }
+    
+    try:
+        # Batch fixed-size tensors
+        composition_batch = torch.stack([item["composition"] for item in valid_batch])
+        spacegroup_batch = torch.stack([item["spacegroup"] for item in valid_batch])
+        lattice_batch = torch.stack([item["lattice"] for item in valid_batch])
+        filepaths = [item["filepath"] for item in valid_batch]
 
-    # Batch variable-length tensors (Atom sequences)
-    atom_types_list = [item["atom_types"] for item in batch]
-    atom_wyckoffs_list = [item["atom_wyckoffs"] for item in batch]
-    atom_coords_list = [item["atom_coords"] for item in batch]
+        # Batch variable-length tensors (Atom sequences)
+        atom_types_list = [item["atom_types"] for item in valid_batch]
+        atom_wyckoffs_list = [item["atom_wyckoffs"] for item in valid_batch]
+        atom_coords_list = [item["atom_coords"] for item in valid_batch]
 
-    # Get sequence lengths BEFORE padding (includes START/END tokens if added)
-    lengths = torch.tensor([len(seq) for seq in atom_types_list], dtype=torch.long)
+        # Get sequence lengths BEFORE padding (includes START/END tokens if added)
+        lengths = torch.tensor([len(seq) for seq in atom_types_list], dtype=torch.long)
 
-    # Pad sequences using PAD=0 for indices
-    atom_types_padded = pad_sequence(
-        atom_types_list, batch_first=True, padding_value=ATOM_TYPE_PAD_IDX
-    )
-    atom_wyckoffs_padded = pad_sequence(
-        atom_wyckoffs_list, batch_first=True, padding_value=ATOM_WYCKOFF_PAD_IDX
-    )
-    atom_coords_padded = pad_sequence(
-        atom_coords_list, batch_first=True, padding_value=ATOM_COORD_PAD_VAL
-    )
+        # Pad sequences using PAD=0 for indices
+        atom_types_padded = pad_sequence(
+            atom_types_list, batch_first=True, padding_value=ATOM_TYPE_PAD_IDX
+        )
+        atom_wyckoffs_padded = pad_sequence(
+            atom_wyckoffs_list, batch_first=True, padding_value=ATOM_WYCKOFF_PAD_IDX
+        )
+        atom_coords_padded = pad_sequence(
+            atom_coords_list, batch_first=True, padding_value=ATOM_COORD_PAD_VAL
+        )
 
-    # Create padding mask (True for data/tokens, False for padding)
-    # Note: This mask marks PAD tokens (index 0) as False.
-    max_len = lengths.max().item() if lengths.numel() > 0 else 0
-    # Careful: Need to ensure the mask correctly identifies padding *index* 0, not just position 0
-    # One way: Check if the padded value is NOT the padding index.
-    # atom_mask = (atom_types_padded != ATOM_TYPE_PAD_IDX) # Check against padding value
-    # Simpler way using lengths:
-    atom_mask = (
-        torch.arange(max_len)[None, :] < lengths[:, None]
-    )  # Shape: (batch_size, max_len)
+        # Create padding mask (True for data/tokens, False for padding)
+        # Note: This mask marks PAD tokens (index 0) as False.
+        max_len = lengths.max().item() if lengths.numel() > 0 else 0
+        # Careful: Need to ensure the mask correctly identifies padding *index* 0, not just position 0
+        # Simpler way using lengths:
+        atom_mask = (
+            torch.arange(max_len)[None, :] < lengths[:, None]
+        )  # Shape: (batch_size, max_len)
 
-    return {
-        "composition": composition_batch,
-        "spacegroup": spacegroup_batch,
-        "lattice": lattice_batch,
-        "atom_types": atom_types_padded,
-        "atom_wyckoffs": atom_wyckoffs_padded,
-        "atom_coords": atom_coords_padded,
-        "atom_mask": atom_mask,  # Mask indicating non-padded atom entries (True where valid)
-        "lengths": lengths,  # Original lengths of atom sequences (incl. START/END)
-        "filepaths": filepaths,
-    }
+        return {
+            "composition": composition_batch,
+            "spacegroup": spacegroup_batch,
+            "lattice": lattice_batch,
+            "atom_types": atom_types_padded,
+            "atom_wyckoffs": atom_wyckoffs_padded,
+            "atom_coords": atom_coords_padded,
+            "atom_mask": atom_mask,  # Mask indicating non-padded atom entries (True where valid)
+            "lengths": lengths,  # Original lengths of atom sequences (incl. START/END)
+            "filepaths": filepaths,
+        }
+    except Exception as e:
+        log.error(f"Error in collate_fn: {str(e)}")
+        # Re-raise with more context to help debugging
+        raise RuntimeError(f"Collate function failed: {str(e)}") from e
 
 
 class HCTDataModule(LightningModule):
@@ -85,6 +106,11 @@ class HCTDataModule(LightningModule):
     Loads pre-processed data saved as .pt files (expecting indices >= 1).
     Handles batching and padding of variable-length atom sequences.
     """
+    
+    def on_exception(self, exception):
+        """Handle exceptions gracefully during DataModule operations"""
+        log.error(f"Exception in DataModule: {str(exception)}")
+        # We can add specific exception handling here if needed
 
     def __init__(
         self,
@@ -234,7 +260,16 @@ class HCTDataModule(LightningModule):
 
     def test_dataloader(self) -> DataLoader:
         log.debug("Creating test dataloader")
-        return self._get_dataloader(self.test_dataset, shuffle=False)
+        # Use fewer workers for testing to reduce risk of worker crashes
+        original_workers = self.hparams.num_workers
+        test_workers = min(self.hparams.num_workers, 2) if self.hparams.num_workers > 0 else 0
+        self.hparams.num_workers = test_workers
+        
+        dataloader = self._get_dataloader(self.test_dataset, shuffle=False)
+        
+        # Restore original worker count
+        self.hparams.num_workers = original_workers
+        return dataloader
 
     def predict_dataloader(self) -> DataLoader:
         log.debug("Creating predict dataloader")

@@ -1,11 +1,20 @@
 from typing import Any, Dict, List, Optional, Tuple
-
+import os
 import hydra
-import lightning as L
-import torch
+
+# import lightning as L
+# import torch
+import lightning.pytorch as pl
 from lightning import Callback, Trainer
 from omegaconf import DictConfig
 import rootutils
+
+from mattermake.utils.distributed_init import (
+    configure_pytorch,
+    init_distributed_mode,
+    log_distributed_settings,
+    patch_lightning_slurm_master_addr,
+)
 
 from mattermake.models.hct_module import HierarchicalCrystalTransformer
 from mattermake.utils import (
@@ -32,12 +41,12 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         :return: A tuple with metrics dict and the dict with all instantiated objects.
     """
     # Set seed for random number generators in pytorch, numpy and python.random
-    if cfg.get("seed"):
-        L.seed_everything(cfg.seed, workers=True)
+    # if cfg.get("seed"):
+    #     L.seed_everything(cfg.seed, workers=True)
 
-    # Set precision for numerical operations
-    if torch.cuda.is_available():
-        torch.set_float32_matmul_precision("medium")
+    # # Set precision for numerical operations
+    # if torch.cuda.is_available():
+    #     torch.set_float32_matmul_precision("medium")
 
     log.info(f"Instantiating datamodule <{cfg.data._target_}>")
     datamodule = hydra.utils.instantiate(cfg.data)
@@ -122,4 +131,10 @@ def main(cfg: DictConfig) -> Optional[float]:
 
 
 if __name__ == "__main__":
+    pl.seed_everything(42)
+    patch_lightning_slurm_master_addr()
+    if os.environ.get("SLURM_NTASKS"):
+        init_distributed_mode(port=12354)
+    log_distributed_settings(log)
+    configure_pytorch(log)
     main()

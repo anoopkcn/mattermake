@@ -9,10 +9,52 @@ class EncoderBase(nn.Module):
     def __init__(self, d_output: int):
         super().__init__()
         self.d_output = d_output
+        # Optional projector for conditioning context - initialized in subclasses if needed
+        self.condition_projector = None
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, condition_context: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """Returns context vector/sequence for conditioning"""
         raise NotImplementedError
+
+    def _apply_conditioning(
+        self, x: torch.Tensor, condition_context: Optional[torch.Tensor]
+    ) -> torch.Tensor:
+        """Helper to apply conditioning if projector and context exist."""
+        if condition_context is not None and self.condition_projector is not None:
+            # Project the condition context
+            projected_condition = self.condition_projector(condition_context)
+
+            # Handle shapes: condition_context might be (B, 1, D) or (B, D)
+            # x might be (B, 1, D), (B, L, D), or (B, D)
+            if x.dim() == 3 and projected_condition.dim() == 2:
+                # Unsqueeze condition: (B, D) -> (B, 1, D)
+                projected_condition = projected_condition.unsqueeze(1)
+            elif (
+                x.dim() == 2
+                and projected_condition.dim() == 3
+                and projected_condition.size(1) == 1
+            ):
+                # Squeeze condition: (B, 1, D) -> (B, D)
+                projected_condition = projected_condition.squeeze(1)
+
+            # Expand if necessary (e.g., global context for sequence encoder)
+            if x.dim() == 3 and projected_condition.dim() == 3:
+                if x.size(1) > 1 and projected_condition.size(1) == 1:
+                    # Expand (B, 1, D) -> (B, L, D) to match x
+                    projected_condition = projected_condition.expand(-1, x.size(1), -1)
+
+            # Ensure shapes match for addition
+            if x.shape == projected_condition.shape:
+                x = x + projected_condition
+            else:
+                # Fallback or raise error if shapes still mismatch after adjustments
+                print(
+                    f"Warning: Shape mismatch in conditioning. x: {x.shape}, condition: {projected_condition.shape}. Skipping conditioning."
+                )
+
+        return x
 
 
 class CompositionEncoder(EncoderBase):
@@ -33,22 +75,36 @@ class CompositionEncoder(EncoderBase):
             d_model, nhead, dim_feedforward, dropout, batch_first=True
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers)
+        # No condition projector needed for the first encoder usually
 
-    def forward(self, composition: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        composition: torch.Tensor,
+        condition_context: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
         Args:
             composition: (batch_size, element_vocab_size)
+            condition_context: Optional conditioning tensor (ignored here)
         Returns:
             context: (batch_size, 1, d_model)
         """
         comp_input = self.processor(composition).unsqueeze(1)
+        # Conditioning could potentially be added here if needed in the future
+        # comp_input = self._apply_conditioning(comp_input, condition_context)
         return self.encoder(comp_input)  # (batch, 1, d_model)
 
 
 class SpaceGroupEncoder(EncoderBase):
     """Encodes space group using one-hot encoding instead of direct embedding"""
 
-    def __init__(self, sg_vocab_size: int, sg_embed_dim: int, d_model: int):
+    def __init__(
+        self,
+        sg_vocab_size: int,
+        sg_embed_dim: int,
+        d_model: int,
+        has_conditioning: bool = False,
+    ):
         super().__init__(d_output=d_model)
         # Store parameters
         self.sg_vocab_size = sg_vocab_size
@@ -62,10 +118,17 @@ class SpaceGroupEncoder(EncoderBase):
         # Optional activation between projections
         self.activation = nn.ReLU()
 
-    def forward(self, spacegroup: torch.Tensor) -> torch.Tensor:
+        # Optional conditioning
+        if has_conditioning:
+            self.condition_projector = nn.Linear(d_model, sg_embed_dim)
+
+    def forward(
+        self, spacegroup: torch.Tensor, condition_context: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """
         Args:
             spacegroup: (batch_size, 1) with values 1-230
+            condition_context: Optional conditioning tensor
         Returns:
             context: (batch_size, 1, d_model)
         """
@@ -85,19 +148,24 @@ class SpaceGroupEncoder(EncoderBase):
 
         # Apply projections with activation in between
         hidden = self.activation(self.projector1(one_hot))
+
+        # Apply conditioning after first projection
+        hidden = self._apply_conditioning(hidden, condition_context)
+
         output = self.projector2(hidden)
 
         return output.unsqueeze(1)  # (batch, 1, d_model)
 
 
 class LatticeEncoder(EncoderBase):
-    """Encodes lattice parameters to a latent representation"""
+    """Encodes lattice parameters to a latent representation, optionally conditioned."""
 
     def __init__(
         self,
         d_model: int,
         latent_dim: int = 64,
         equivariant: bool = False,  # Start with simpler non-equivariant version
+        has_conditioning: bool = False,  # Flag to indicate if conditioning is expected
     ):
         super().__init__(d_output=d_model)
 
@@ -108,30 +176,34 @@ class LatticeEncoder(EncoderBase):
         # 6 lattice parameters (a, b, c, alpha, beta, gamma)
         input_dim = 6
 
+        # Initialize condition projector if needed
+        if has_conditioning:
+            # Project conditioning (e.g., SG context) to latent_dim to add within MLP
+            self.condition_projector = nn.Linear(d_model, latent_dim)
+
         # Option 1: Simple MLP (non-equivariant)
         if not equivariant:
-            self.encoder = nn.Sequential(
-                nn.Linear(input_dim, latent_dim),
-                nn.ReLU(),
-                nn.Linear(latent_dim, latent_dim),
-                nn.ReLU(),
-                nn.Linear(latent_dim, d_model),
-            )
+            self.layer1 = nn.Linear(input_dim, latent_dim)
+            self.act1 = nn.ReLU()
+            self.layer2 = nn.Linear(latent_dim, latent_dim)
+            self.act2 = nn.ReLU()
+            self.layer3 = nn.Linear(latent_dim, d_model)
         # Option 2: Placeholder for future equivariant version
         else:
-            # This would be replaced with a proper equivariant network
-            self.encoder = nn.Sequential(
-                nn.Linear(input_dim, latent_dim),
-                nn.ReLU(),
-                nn.Linear(latent_dim, latent_dim),
-                nn.ReLU(),
-                nn.Linear(latent_dim, d_model),
-            )
+            # Replace with equivariant layers
+            self.layer1 = nn.Linear(input_dim, latent_dim)
+            self.act1 = nn.ReLU()
+            self.layer2 = nn.Linear(latent_dim, latent_dim)
+            self.act2 = nn.ReLU()
+            self.layer3 = nn.Linear(latent_dim, d_model)
 
-    def forward(self, lattice: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, lattice: torch.Tensor, condition_context: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """
         Args:
             lattice: (batch_size, 6) lattice parameters
+            condition_context: Optional (batch_size, 1, d_model) tensor (e.g., from SG encoder)
         Returns:
             context: (batch_size, 1, d_model)
         """
@@ -139,8 +211,18 @@ class LatticeEncoder(EncoderBase):
         if lattice.dim() > 2:
             lattice = lattice.squeeze(1)  # Remove any singleton dimensions
 
-        # Apply encoder
-        encoded = self.encoder(lattice)
+        # MLP Forward Pass - first layer
+        x = self.layer1(lattice)
+
+        # Apply conditioning *after* the first layer (inject into hidden state)
+        # Note: _apply_conditioning projects and adds if context & projector exist
+        x = self._apply_conditioning(x, condition_context)
+
+        # Continue with MLP layers
+        x = self.act1(x)
+        x = self.layer2(x)
+        x = self.act2(x)
+        encoded = self.layer3(x)
 
         # Add sequence dimension if needed
         if encoded.dim() == 2:
@@ -150,7 +232,7 @@ class LatticeEncoder(EncoderBase):
 
 
 class AtomTypeEncoder(EncoderBase):
-    """Encodes atom type sequences"""
+    """Encodes atom type sequences, optionally conditioned."""
 
     def __init__(
         self,
@@ -164,6 +246,7 @@ class AtomTypeEncoder(EncoderBase):
         pad_idx: int = 0,
         start_idx: int = -1,
         end_idx: int = -2,
+        has_conditioning: bool = False,  # Flag
     ):
         super().__init__(d_output=d_model)
         # Create embedding layer
@@ -174,6 +257,11 @@ class AtomTypeEncoder(EncoderBase):
 
         # Projection to d_model
         self.projection = nn.Linear(type_embed_dim, d_model)
+
+        # Initialize condition projector if needed
+        if has_conditioning:
+            # Projects fused global context (d_model) to d_model
+            self.condition_projector = nn.Linear(d_model, d_model)
 
         # Optional transformer layers for more sophisticated encoding
         encoder_layer = nn.TransformerEncoderLayer(
@@ -197,12 +285,16 @@ class AtomTypeEncoder(EncoderBase):
         return mapped_indices
 
     def forward(
-        self, atom_types: torch.Tensor, mask: Optional[torch.Tensor] = None
+        self,
+        atom_types: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        condition_context: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Args:
             atom_types: (batch_size, seq_len) atom type indices
             mask: (batch_size, seq_len) boolean mask (True where padded)
+            condition_context: Optional (batch_size, 1, d_model) fused global context
         Returns:
             context: (batch_size, seq_len, d_model)
         """
@@ -214,6 +306,10 @@ class AtomTypeEncoder(EncoderBase):
         type_embeds = self.type_embedding(mapped_indices)
         proj_embeds = self.projection(type_embeds)
 
+        # Apply conditioning *before* the transformer encoder
+        # _apply_conditioning handles projection, expansion, and addition
+        proj_embeds = self._apply_conditioning(proj_embeds, condition_context)
+
         # Apply transformer encoder if needed (with proper masking)
         key_padding_mask = ~mask if mask is not None else None
         output = self.encoder(proj_embeds, src_key_padding_mask=key_padding_mask)
@@ -222,7 +318,7 @@ class AtomTypeEncoder(EncoderBase):
 
 
 class AtomCoordinateEncoder(EncoderBase):
-    """Encodes atom coordinate sequences"""
+    """Encodes atom coordinate sequences, optionally conditioned."""
 
     def __init__(
         self,
@@ -232,12 +328,18 @@ class AtomCoordinateEncoder(EncoderBase):
         nhead: int = 8,
         dim_feedforward: int = 1024,
         dropout: float = 0.1,
+        has_conditioning: bool = False,  # Flag
     ):
         super().__init__(d_output=d_model)
         # Process raw coordinates through MLP
         self.coords_mlp = nn.Sequential(
             nn.Linear(3, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, d_model)
         )
+
+        # Initialize condition projector if needed
+        if has_conditioning:
+            # Projects fused global context (d_model) to d_model
+            self.condition_projector = nn.Linear(d_model, d_model)
 
         # Optional transformer layers
         encoder_layer = nn.TransformerEncoderLayer(
@@ -246,17 +348,25 @@ class AtomCoordinateEncoder(EncoderBase):
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers)
 
     def forward(
-        self, coords: torch.Tensor, mask: Optional[torch.Tensor] = None
+        self,
+        coords: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        condition_context: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Args:
             coords: (batch_size, seq_len, 3) fractional coordinates
             mask: (batch_size, seq_len) boolean mask (True where padded)
+            condition_context: Optional (batch_size, 1, d_model) fused global context
         Returns:
             context: (batch_size, seq_len, d_model)
         """
         # Process coordinates
         processed_coords = self.coords_mlp(coords)
+
+        # Apply conditioning *before* the transformer encoder
+        # _apply_conditioning handles projection, expansion, and addition
+        processed_coords = self._apply_conditioning(processed_coords, condition_context)
 
         # Apply transformer encoder if needed (with proper masking)
         key_padding_mask = ~mask if mask is not None else None

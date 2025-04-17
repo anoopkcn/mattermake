@@ -34,6 +34,8 @@ encoder_configs:
     # Lattice parameter encoder
     latent_dim: 64 # Dimension of intermediate lattice representation
     equivariant: false # Use non-equivariant version for now
+    has_conditioning: true # Enable conditioning
+    depends_on: ["spacegroup"] # Depend on the SpaceGroup encoder
   atom_type:
     # New dedicated atom type encoder
     element_vocab_size: ${model.element_vocab_size}
@@ -45,6 +47,8 @@ encoder_configs:
     pad_idx: ${model.pad_idx}
     start_idx: ${model.start_idx}
     end_idx: ${model.end_idx}
+    has_conditioning: true # Enable conditioning
+    depends_on: ["composition", "spacegroup", "lattice"] # Depend on all global encoders
   coordinate:
     # New dedicated coordinate encoder
     hidden_dim: 128
@@ -52,6 +56,8 @@ encoder_configs:
     nhead: ${model.nhead}
     dim_feedforward: ${model.dim_feedforward}
     dropout: ${model.dropout}
+    has_conditioning: true # Enable conditioning
+    depends_on: ["composition", "spacegroup", "lattice"] # Depend on all global encoders
 
 # --- Optimizer & Loss Params ---
 learning_rate: 1e-4
@@ -66,15 +72,16 @@ eps: 1e-6
 # Define which decoders to use and their specific parameters
 decoder_configs:
   spacegroup:
-    sg_vocab_size: 230  # 1-230 space group range
+    sg_vocab_size: 230 # 1-230 space group range
   lattice:
     # Dedicated lattice decoder - uses default params
   atom_type:
     # Atom type decoder - automatically uses effective_type_vocab_size
   coordinate:
-    eps: 1e-6  # Minimum value for numerical stability
+    eps: 1e-6 # Minimum value for numerical stability
 
 # --- Encoding/Decoding Order ---
 # Order in which encoders and decoders are applied
-encoding_order: ["composition", "spacegroup", "lattice", "atom_type", "coordinate"]
+encoding_order:
+  ["composition", "spacegroup", "lattice", "atom_type", "coordinate"]
 decoding_order: ["spacegroup", "lattice", "atom_type", "coordinate"]

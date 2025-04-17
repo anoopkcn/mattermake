@@ -2,8 +2,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import os
 import hydra
 
-# import lightning as L
-# import torch
 import lightning.pytorch as pl
 from lightning import Callback, Trainer
 from omegaconf import DictConfig
@@ -40,14 +38,6 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         :param cfg: A DictConfig configuration composed by Hydra.
         :return: A tuple with metrics dict and the dict with all instantiated objects.
     """
-    # Set seed for random number generators in pytorch, numpy and python.random
-    # if cfg.get("seed"):
-    #     L.seed_everything(cfg.seed, workers=True)
-
-    # # Set precision for numerical operations
-    # if torch.cuda.is_available():
-    #     torch.set_float32_matmul_precision("medium")
-
     log.info(f"Instantiating datamodule <{cfg.data._target_}>")
     datamodule = hydra.utils.instantiate(cfg.data)
 
@@ -82,54 +72,41 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         log.info("Starting training!")
         trainer.fit(model=model, datamodule=datamodule, ckpt_path=cfg.get("ckpt_path"))
 
-    train_metrics = trainer.callback_metrics
+    metrics = trainer.callback_metrics
+    # train_metrics = trainer.callback_metrics
 
-    if cfg.get("test"):
-        log.info("Starting testing!")
-        if not cfg.get("train") or cfg.trainer.get("fast_dev_run"):
-            # Load best checkpoint after training
-            ckpt_path = cfg.get("ckpt_path")
-            if not ckpt_path:
-                log.warning(
-                    "Best checkpoint not found! Using current model parameters for testing..."
-                )
-                ckpt_path = None
-        else:
-            ckpt_path = "best"
+    # if cfg.get("test"):
+    #     log.info("Starting testing!")
+    #     if not cfg.get("train") or cfg.trainer.get("fast_dev_run"):
+    #         # Load best checkpoint after training
+    #         ckpt_path = cfg.get("ckpt_path")
+    #         if not ckpt_path:
+    #             log.warning(
+    #                 "Best checkpoint not found! Using current model parameters for testing..."
+    #             )
+    #             ckpt_path = None
+    #     else:
+    #         ckpt_path = "best"
 
-        # For testing, it's recommended to use a single device
-        # Create a copy of the trainer config with a single device
-        test_trainer_kwargs = {
-            "devices": 1,  # Use just one device
-            "num_nodes": 1,  # Use just one node
-            "strategy": None,  # No distributed strategy needed
-            # Keep other settings from original trainer
-            "callbacks": trainer.callbacks,
-            "logger": trainer.loggers,
-        }
-        
-        # Create test-specific trainer
-        log.info("Creating single-device trainer for testing...")
-        test_trainer = hydra.utils.instantiate(
-            cfg.trainer, 
-            **test_trainer_kwargs
-        )
-        
-        # Run the test with the single-device trainer
-        test_metrics = test_trainer.test(
-            model=model, datamodule=datamodule, ckpt_path=ckpt_path
-        )
+    #     # Create test-specific trainer
+    #     log.info("Creating single-device trainer for testing...")
+    #     test_trainer = hydra.utils.instantiate(cfg.trainer)
 
-        # Update metrics with test metrics
-        if test_metrics and len(test_metrics) > 0:
-            metrics = test_metrics[0]
-        else:
-            metrics = {}
+    #     # Run the test with the single-device trainer
+    #     test_metrics = test_trainer.test(
+    #         model=model, datamodule=datamodule, ckpt_path=ckpt_path
+    #     )
 
-        # Combine with training metrics
-        metrics.update(train_metrics)
-    else:
-        metrics = train_metrics
+    #     # Update metrics with test metrics
+    #     if test_metrics and len(test_metrics) > 0:
+    #         metrics = test_metrics[0]
+    #     else:
+    #         metrics = {}
+
+    #     # Combine with training metrics
+    #     metrics.update(train_metrics)
+    # else:
+    #     metrics = train_metrics
 
     # Return metric dictionary and object dictionary for later use
     return metrics, object_dict

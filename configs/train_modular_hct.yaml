@@ -1,0 +1,46 @@
+# @package _global_
+
+# specify default task name that will be used to name logging directories
+task_name: "train_modular_hct" # MODIFIED
+
+# set experiment for logging
+# experiment: modular_hct_exp # MODIFIED - Point to the new experiment config by default
+
+# set default precision for all operations
+precision: 32
+
+# training mode
+train: true
+
+# evaluation mode
+test: true
+
+# randomly seed all operations
+seed: 42
+
+# default config choices
+defaults:
+  - _self_
+  - data: hct # Keep using the same data config
+  - model: modular_hct # MODIFIED - Use the new model config
+  - callbacks: default
+  - logger: wandb # Or tensorboard, etc.
+  - trainer: ddp_continuous # Or gpu, cpu, etc.
+  - paths: default
+  - extras: default
+  - hydra: default
+  # experiment config allows for further customization (via command line or this file)
+  - experiment: null # MODIFIED - Explicitly set default experiment
+  # debugging config (enable with `python train_modular_hct.py debug=default)`
+  - debug: null
+  # optional local config for machine/user specific settings
+  # - optional local: default
+
+# passing checkpoint path is optional
+ckpt_path: null
+
+# tags to help you identify your experiments
+tags: ["modular-hct", "material-design"] # MODIFIED
+
+trainer:
+  gradient_clip_val: 1.0

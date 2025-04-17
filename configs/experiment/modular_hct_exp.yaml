@@ -1,0 +1,40 @@
+# mattermake/configs/experiment/modular_hct_exp.yaml
+# Experiment configuration for the Modular HCT model
+
+# @package _global_
+
+# Set default configuration overrides for this experiment
+defaults:
+  # - override /data: hct # Base data config loaded by train_modular_hct.yaml
+  # - override /model: modular_hct # Base model config loaded by train_modular_hct.yaml
+  - override /callbacks: default
+  - override /trainer: gpu # Or use ddp_continuous, etc.
+  - override /logger: wandb # Or tensorboard, etc.
+
+# Optionally override specific parameters from the defaults
+tags: ["modular-hct", "material-design"]
+
+seed: 42
+
+trainer:
+  min_epochs: 5
+  max_epochs: 100
+  gradient_clip_val: 1.0
+  # accelerator: gpu # Already set by override
+  # devices: 1
+
+model:
+  # Can override specific model params here if needed
+  # e.g., model.learning_rate: 5e-5
+  # e.g., model.encoder_configs.composition.num_layers: 4
+  optimizer: # Keep optimizer block if needed by configure_optimizers logic
+    lr: 0.0001 # Example override
+
+data:
+  batch_size: 32
+  num_workers: 4
+
+logger:
+  wandb:
+    tags: ${tags}
+    group: "modular-hct"

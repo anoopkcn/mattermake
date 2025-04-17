@@ -3,7 +3,7 @@ defaults:
 
 strategy:
   _target_: lightning.pytorch.strategies.DDPStrategy
-  find_unused_parameters: false
+  find_unused_parameters: true # MODIFIED as suggested by DDP error
 
 accelerator: gpu
 devices: 2  # Updated to match available hardware

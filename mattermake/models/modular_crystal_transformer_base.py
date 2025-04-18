@@ -301,34 +301,41 @@ class ModularCrystalTransformerBase(nn.Module):
             try:
                 # Check if this encoder has dependencies
                 condition_context = None
-                if name in self.encoder_dependencies and self.encoder_dependencies[name]:
+                if (
+                    name in self.encoder_dependencies
+                    and self.encoder_dependencies[name]
+                ):
                     # Gather outputs from dependency encoders
                     dep_contexts = []
                     for dep_name in self.encoder_dependencies[name]:
                         if dep_name in encoder_outputs:
                             dep_contexts.append(encoder_outputs[dep_name])
-                    
+
                     # Fuse contexts if we have any
                     if dep_contexts:
                         condition_context = self._fuse_contexts(dep_contexts)
-                        
+
                 # Call the encoder with appropriate inputs and conditioning
                 if name == "composition":
                     output = encoder(composition, condition_context)
                 elif name == "spacegroup":
                     output = encoder(sg_target, condition_context)
-                elif name == "lattice": # Now encodes the matrix
+                elif name == "lattice":  # Now encodes the matrix
                     output = encoder(lattice_matrix_target, condition_context)
                 elif name == "atom_type":
                     # Use teacher forcing (shifted right for decoder inputs)
                     atom_types_input = atom_types_target[:, :-1]
                     atom_mask_input = atom_mask[:, :-1]
-                    output = encoder(atom_types_input, atom_mask_input, condition_context)
+                    output = encoder(
+                        atom_types_input, atom_mask_input, condition_context
+                    )
                 elif name == "coordinate":
                     # Use teacher forcing (shifted right for decoder inputs)
                     atom_coords_input = atom_coords_target[:, :-1]
                     atom_mask_input = atom_mask[:, :-1]
-                    output = encoder(atom_coords_input, atom_mask_input, condition_context)
+                    output = encoder(
+                        atom_coords_input, atom_mask_input, condition_context
+                    )
                 elif name in batch:  # Generic fallback for other encoders
                     output = encoder(batch[name], condition_context)
                 else:
@@ -505,13 +512,13 @@ class ModularCrystalTransformerBase(nn.Module):
         """Validate that encoding_order respects all encoder dependencies"""
         # Create a set of processed encoders to check dependencies against
         processed = set()
-        
+
         for name in self.encoding_order:
             # Skip if encoder doesn't exist or isn't in dependencies
             if name not in self.encoders or name not in self.encoder_dependencies:
                 processed.add(name)
                 continue
-                
+
             # Check if all dependencies have been processed before this encoder
             deps = self.encoder_dependencies[name]
             for dep in deps:
@@ -520,25 +527,25 @@ class ModularCrystalTransformerBase(nn.Module):
                         f"Encoder '{name}' depends on '{dep}' but appears before it "
                         f"in the encoding order. Please update encoding_order to respect dependencies."
                     )
-            
+
             processed.add(name)
-    
+
     def _fuse_contexts(self, contexts: List[torch.Tensor]) -> torch.Tensor:
         """Fuse multiple context tensors by averaging them.
-        
+
         Args:
             contexts: List of context tensors to fuse
-            
+
         Returns:
             Fused context tensor
         """
         if not contexts:
             return None
-            
+
         # For now, just average the contexts
         # Can be enhanced with learned fusion later
         return torch.stack(contexts).mean(dim=0)
-    
+
     @property
     def device(self):
         try:
@@ -551,7 +558,9 @@ class ModularCrystalTransformerBase(nn.Module):
         self,
         # --- Primary Inputs for Encoders (at the same hierarchical level) ---
         composition: torch.Tensor,  # (1, V_elem) - Required input
-        spacegroup: Optional[torch.Tensor] = None,  # (1, 1) - Optional but treated as primary input when provided
+        spacegroup: Optional[
+            torch.Tensor
+        ] = None,  # (1, 1) - Optional but treated as primary input when provided
         # --- Generation Parameters ---
         max_atoms: int = 50,
         sg_sampling_mode: str = "sample",  # Only used when spacegroup is None
@@ -588,7 +597,7 @@ class ModularCrystalTransformerBase(nn.Module):
             # Skip if not a global encoder or not available
             if name not in self.encoders or name in ["atom_type", "coordinate"]:
                 continue
-                
+
             # Check if this encoder has dependencies
             condition_context = None
             if name in self.encoder_dependencies and self.encoder_dependencies[name]:
@@ -597,26 +606,32 @@ class ModularCrystalTransformerBase(nn.Module):
                 for dep_name in self.encoder_dependencies[name]:
                     if dep_name in global_encoder_outputs:
                         dep_contexts.append(global_encoder_outputs[dep_name])
-                
+
                 # Fuse contexts if we have any
                 if dep_contexts:
                     condition_context = self._fuse_contexts(dep_contexts)
-            
+
             # Process each encoder type with appropriate inputs
             if name == "composition":
-                comp_output = self.encoders[name](composition.to(device), condition_context)
+                comp_output = self.encoders[name](
+                    composition.to(device), condition_context
+                )
                 global_encoder_outputs["composition"] = comp_output
             elif name == "spacegroup":
                 # Only encode if provided
                 if spacegroup is not None:
-                    sg_output = self.encoders[name](spacegroup.to(device), condition_context)
+                    sg_output = self.encoders[name](
+                        spacegroup.to(device), condition_context
+                    )
                     global_encoder_outputs["spacegroup"] = sg_output
             elif name == "lattice":
                 # We'll encode lattice after we predict it below
                 pass
             else:
                 # Generic fallback for any other global encoders
-                print(f"Warning: Encoder '{name}' not handled specifically in generate. Skipping.")
+                print(
+                    f"Warning: Encoder '{name}' not handled specifically in generate. Skipping."
+                )
 
         # --- Step 2: Process Space Group (use provided or generate) ---
         # Space group is treated as a primary input at the same hierarchical level as composition
@@ -652,12 +667,13 @@ class ModularCrystalTransformerBase(nn.Module):
         else:
             # Use the provided space group directly
             sg_sampled = spacegroup
-            
+
             # Ensure we've encoded this primary input if it wasn't done in Step 1
-            if "spacegroup" not in global_encoder_outputs and "spacegroup" in self.encoders:
-                sg_context = self.encoders["spacegroup"](
-                    sg_sampled.to(device)
-                )
+            if (
+                "spacegroup" not in global_encoder_outputs
+                and "spacegroup" in self.encoders
+            ):
+                sg_context = self.encoders["spacegroup"](sg_sampled.to(device))
                 global_encoder_outputs["spacegroup"] = sg_context
 
         # --- Step 3: Predict and Sample Lattice ---
@@ -700,19 +716,24 @@ class ModularCrystalTransformerBase(nn.Module):
         if "lattice" in self.encoders:
             # Check if lattice encoder has dependencies
             condition_context = None
-            if "lattice" in self.encoder_dependencies and self.encoder_dependencies["lattice"]:
+            if (
+                "lattice" in self.encoder_dependencies
+                and self.encoder_dependencies["lattice"]
+            ):
                 # Gather outputs from dependency encoders
                 dep_contexts = []
                 for dep_name in self.encoder_dependencies["lattice"]:
                     if dep_name in global_encoder_outputs:
                         dep_contexts.append(global_encoder_outputs[dep_name])
-                
+
                 # Fuse contexts if we have any
                 if dep_contexts:
                     condition_context = self._fuse_contexts(dep_contexts)
-            
+
             # Pass the sampled matrix (flattened) to the encoder
-            lattice_context = self.encoders["lattice"](lattice_matrix_sampled_flat.to(device), condition_context)
+            lattice_context = self.encoders["lattice"](
+                lattice_matrix_sampled_flat.to(device), condition_context
+            )
             global_encoder_outputs["lattice"] = lattice_context
 
         # --- Step 4: Autoregressive Atom Sequence Generation ---
@@ -875,7 +896,7 @@ class ModularCrystalTransformerBase(nn.Module):
         results = {
             "composition": composition.squeeze(0).cpu(),
             "spacegroup_sampled": sg_sampled.squeeze(0).cpu(),
-            "lattice_matrix_sampled": lattice_matrix_sampled.cpu(), # Return 3x3 matrix
+            "lattice_matrix_sampled": lattice_matrix_sampled.cpu(),  # Return 3x3 matrix
             "atom_types_generated": torch.tensor(
                 generated_types, dtype=torch.long, device="cpu"
             ),

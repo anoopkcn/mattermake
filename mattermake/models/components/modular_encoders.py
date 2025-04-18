@@ -183,7 +183,7 @@ class LatticeEncoder(EncoderBase):
 
         # Option 1: Simple MLP (non-equivariant)
         if not equivariant:
-            self.layer1 = nn.Linear(input_dim, latent_dim) # Input is now 9
+            self.layer1 = nn.Linear(input_dim, latent_dim)  # Input is now 9
             self.act1 = nn.ReLU()
             self.layer2 = nn.Linear(latent_dim, latent_dim)
             self.act2 = nn.ReLU()
@@ -191,7 +191,7 @@ class LatticeEncoder(EncoderBase):
         # Option 2: Placeholder for future equivariant version
         else:
             # Replace with equivariant layers suitable for 3x3 matrix input
-            self.layer1 = nn.Linear(input_dim, latent_dim) # Input is now 9
+            self.layer1 = nn.Linear(input_dim, latent_dim)  # Input is now 9
             self.act1 = nn.ReLU()
             self.layer2 = nn.Linear(latent_dim, latent_dim)
             self.act2 = nn.ReLU()
@@ -199,7 +199,7 @@ class LatticeEncoder(EncoderBase):
 
     def _convert_params_to_matrix(self, lattice_params: torch.Tensor) -> torch.Tensor:
         """Convert 6 lattice parameters (a, b, c, alpha, beta, gamma) to a flattened 3x3 matrix.
-        
+
         Args:
             lattice_params: Tensor of shape (batch_size, 6) with [a, b, c, alpha, beta, gamma]
                             where angles are in degrees
@@ -207,45 +207,54 @@ class LatticeEncoder(EncoderBase):
             Flattened lattice matrix of shape (batch_size, 9)
         """
         # Batch size and device are inferred from the parameters
-        
+
         # Extract parameters
         a, b, c = lattice_params[:, 0], lattice_params[:, 1], lattice_params[:, 2]
-        alpha, beta, gamma = lattice_params[:, 3], lattice_params[:, 4], lattice_params[:, 5]
-        
+        alpha, beta, gamma = (
+            lattice_params[:, 3],
+            lattice_params[:, 4],
+            lattice_params[:, 5],
+        )
+
         # Convert angles from degrees to radians
         alpha_rad = alpha * (torch.pi / 180.0)
         beta_rad = beta * (torch.pi / 180.0)
         gamma_rad = gamma * (torch.pi / 180.0)
-        
+
         # Calculate matrix elements (simplifying to standard representation)
         # First row: [a, 0, 0]
         m11 = a
         m12 = torch.zeros_like(a)
         m13 = torch.zeros_like(a)
-        
+
         # Second row: [b*cos(gamma), b*sin(gamma), 0]
         m21 = b * torch.cos(gamma_rad)
         m22 = b * torch.sin(gamma_rad)
         m23 = torch.zeros_like(a)
-        
+
         # Third row: more complex due to alpha, beta constraints
         m31 = c * torch.cos(beta_rad)
         # Calculate m32 using constraints
-        cos_alpha_star = (torch.cos(gamma_rad) * torch.cos(beta_rad) - torch.cos(alpha_rad)) / \
-                        (torch.sin(gamma_rad) * torch.sin(beta_rad))
-        cos_alpha_star = torch.clamp(cos_alpha_star, -1.0, 1.0)  # Ensure value is within valid range
+        cos_alpha_star = (
+            torch.cos(gamma_rad) * torch.cos(beta_rad) - torch.cos(alpha_rad)
+        ) / (torch.sin(gamma_rad) * torch.sin(beta_rad))
+        cos_alpha_star = torch.clamp(
+            cos_alpha_star, -1.0, 1.0
+        )  # Ensure value is within valid range
         m32 = c * torch.sin(beta_rad) * cos_alpha_star
-        
+
         # Calculate m33 using constraints
-        m33_sq = c**2 * torch.sin(beta_rad)**2 * (1 - cos_alpha_star**2)
+        m33_sq = c**2 * torch.sin(beta_rad) ** 2 * (1 - cos_alpha_star**2)
         m33 = torch.sqrt(torch.clamp(m33_sq, min=1e-8))  # Avoid negative values in sqrt
-        
+
         # Create flattened matrix
         matrix_flat = torch.stack([m11, m12, m13, m21, m22, m23, m31, m32, m33], dim=-1)
         return matrix_flat
 
     def forward(
-        self, lattice_input: torch.Tensor, condition_context: Optional[torch.Tensor] = None
+        self,
+        lattice_input: torch.Tensor,
+        condition_context: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -259,14 +268,18 @@ class LatticeEncoder(EncoderBase):
         """
         # Ensure input is flattened (batch_size, 9)
         if lattice_input.dim() == 3 and lattice_input.shape[1:] == (3, 3):
-             lattice_flat = lattice_input.reshape(lattice_input.size(0), -1) # Flatten to (batch_size, 9)
+            lattice_flat = lattice_input.reshape(
+                lattice_input.size(0), -1
+            )  # Flatten to (batch_size, 9)
         elif lattice_input.dim() == 2 and lattice_input.shape[1] == 9:
-             lattice_flat = lattice_input
+            lattice_flat = lattice_input
         elif lattice_input.dim() == 2 and lattice_input.shape[1] == 6:
-             # Handle old format: Convert 6 lattice parameters to 9 matrix elements
-             lattice_flat = self._convert_params_to_matrix(lattice_input)
+            # Handle old format: Convert 6 lattice parameters to 9 matrix elements
+            lattice_flat = self._convert_params_to_matrix(lattice_input)
         else:
-             raise ValueError(f"Unexpected lattice_matrix shape: {lattice_input.shape}. Expected (B, 3, 3), (B, 9), or (B, 6).")
+            raise ValueError(
+                f"Unexpected lattice_matrix shape: {lattice_input.shape}. Expected (B, 3, 3), (B, 9), or (B, 6)."
+            )
 
         # MLP Forward Pass - first layer
         x = self.layer1(lattice_flat)

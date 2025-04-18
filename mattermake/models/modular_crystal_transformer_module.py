@@ -136,22 +136,35 @@ class ModularCrystalTransformer(LightningModule):
             log.warning("sg_logits not found in predictions, skipping SG loss.")
 
         # --- Lattice Matrix Loss ---
-        if "lattice_matrix_mean" in predictions and "lattice_matrix_log_var" in predictions:
+        if (
+            "lattice_matrix_mean" in predictions
+            and "lattice_matrix_log_var" in predictions
+        ):
             try:
                 lattice_matrix_mean = predictions["lattice_matrix_mean"]
                 lattice_matrix_log_var = predictions["lattice_matrix_log_var"]
                 lattice_target_matrix = batch["lattice"]
-                
+
                 # If the target is still in the old format (6 parameters), convert it to matrix format
                 if lattice_target_matrix.shape[-1] == 6:
                     # Borrow the conversion function from the encoder
                     # Note: in a production setting, this should be moved to a shared utility
-                    lattice_target_matrix = self.model.encoders["lattice"]._convert_params_to_matrix(lattice_target_matrix)
-                elif lattice_target_matrix.shape[-1] != 9 and lattice_target_matrix.dim() == 3 and lattice_target_matrix.shape[1:] == (3, 3):
+                    lattice_target_matrix = self.model.encoders[
+                        "lattice"
+                    ]._convert_params_to_matrix(lattice_target_matrix)
+                elif (
+                    lattice_target_matrix.shape[-1] != 9
+                    and lattice_target_matrix.dim() == 3
+                    and lattice_target_matrix.shape[1:] == (3, 3)
+                ):
                     # It's a 3x3 matrix, flatten it
-                    lattice_target_matrix = lattice_target_matrix.reshape(lattice_target_matrix.size(0), -1)
+                    lattice_target_matrix = lattice_target_matrix.reshape(
+                        lattice_target_matrix.size(0), -1
+                    )
                 elif lattice_target_matrix.shape[-1] != 9:
-                    raise ValueError(f"Unexpected lattice target shape: {lattice_target_matrix.shape}. Expected (B, 9) or (B, 6) or (B, 3, 3).")
+                    raise ValueError(
+                        f"Unexpected lattice target shape: {lattice_target_matrix.shape}. Expected (B, 9) or (B, 6) or (B, 3, 3)."
+                    )
 
                 # Add extra safeguards against NaN values
                 if (
@@ -169,11 +182,17 @@ class ModularCrystalTransformer(LightningModule):
                     )
 
                 # Stricter constraints for numerical stability
-                lattice_matrix_mean = torch.clamp(lattice_matrix_mean, min=-10.0, max=10.0)
-                lattice_matrix_log_var = torch.clamp(lattice_matrix_log_var, min=-10.0, max=2.0)
+                lattice_matrix_mean = torch.clamp(
+                    lattice_matrix_mean, min=-10.0, max=10.0
+                )
+                lattice_matrix_log_var = torch.clamp(
+                    lattice_matrix_log_var, min=-10.0, max=2.0
+                )
 
                 # Ensure numerical stability
-                lattice_matrix_var = torch.exp(lattice_matrix_log_var) + self.hparams.eps
+                lattice_matrix_var = (
+                    torch.exp(lattice_matrix_log_var) + self.hparams.eps
+                )
                 lattice_matrix_std = torch.sqrt(lattice_matrix_var).clamp(
                     min=self.hparams.eps, max=5.0
                 )
@@ -190,7 +209,9 @@ class ModularCrystalTransformer(LightningModule):
                 # Final safety clamp
                 nll_lattice = torch.clamp(nll_lattice, min=0.0, max=10.0)
 
-                losses["lattice_matrix_nll"] = nll_lattice * self.hparams.lattice_loss_weight
+                losses["lattice_matrix_nll"] = (
+                    nll_lattice * self.hparams.lattice_loss_weight
+                )
                 total_loss += losses["lattice_matrix_nll"]
             except Exception as e:
                 log.warning(f"Error in lattice matrix loss calculation: {e}")
@@ -201,33 +222,41 @@ class ModularCrystalTransformer(LightningModule):
                 total_loss += losses["lattice_matrix_nll"]
         elif "lattice_mean" in predictions and "lattice_log_var" in predictions:
             # Handle legacy format for backward compatibility
-            log.warning("Found legacy lattice parameter format. Consider updating the model.")
+            log.warning(
+                "Found legacy lattice parameter format. Consider updating the model."
+            )
             try:
                 # Similar calculation, but using the old keys
                 lattice_mean = predictions["lattice_mean"]
                 lattice_log_var = predictions["lattice_log_var"]
                 lattice_target = batch["lattice"]
-                
+
                 # Safety processing (NaN checks, clamping, etc.)
                 # [Omitted - same as above but for lattice_mean/lattice_log_var]
-                
+
                 # Calculate NLL loss
                 lattice_var = torch.exp(lattice_log_var) + self.hparams.eps
-                lattice_std = torch.sqrt(lattice_var).clamp(min=self.hparams.eps, max=5.0)
+                lattice_std = torch.sqrt(lattice_var).clamp(
+                    min=self.hparams.eps, max=5.0
+                )
                 lattice_dist = Normal(lattice_mean, lattice_std)
                 log_probs = lattice_dist.log_prob(lattice_target)
                 log_probs = torch.clamp(log_probs, min=-20.0, max=20.0)
                 nll_lattice = -log_probs.mean()
                 nll_lattice = torch.clamp(nll_lattice, min=0.0, max=10.0)
-                
+
                 losses["lattice_nll"] = nll_lattice * self.hparams.lattice_loss_weight
                 total_loss += losses["lattice_nll"]
             except Exception as e:
                 log.warning(f"Error in legacy lattice loss calculation: {e}")
-                losses["lattice_nll"] = torch.tensor(1.0, device=self.device, requires_grad=True)
+                losses["lattice_nll"] = torch.tensor(
+                    1.0, device=self.device, requires_grad=True
+                )
                 total_loss += losses["lattice_nll"]
         else:
-            log.warning("Neither lattice matrix nor legacy lattice predictions found, skipping Lattice loss.")
+            log.warning(
+                "Neither lattice matrix nor legacy lattice predictions found, skipping Lattice loss."
+            )
 
         # --- Atom Type Loss ---
         if "type_logits" in predictions:
@@ -271,26 +300,86 @@ class ModularCrystalTransformer(LightningModule):
                     periodic_mask
                 ].pow(2)
 
-                # Weight errors by precision
-                weighted_error = coord_squared_error / coord_variance
+                # We're not using the weighted error + log variance approach anymore
+                # as it can result in negative losses
+                # Instead, using direct MSE with variance regularization penalties
+                # Keep these commented for reference on what was causing negative loss:
+                # weighted_error = coord_squared_error / coord_variance
+                # loss_terms = weighted_error + torch.log(coord_variance)
 
-                # Add log variance term (from Gaussian NLL) to prevent variance collapse
-                loss_terms = weighted_error + torch.log(coord_variance)
+                # IMPORTANT: The issue is that loss_terms can be negative due to log variance term
+                # We need to handle the MSE and log variance separately to ensure positive loss
 
-                # Apply mask and compute mean
-                mask_expanded = atom_mask_target.unsqueeze(-1).to(loss_terms.dtype)
-                masked_loss = loss_terms * mask_expanded
+                # Just calculate plain MSE loss for coordinates
+                mask_expanded = atom_mask_target.unsqueeze(-1).to(
+                    coord_squared_error.dtype
+                )
+                masked_mse = coord_squared_error * mask_expanded
                 num_valid = mask_expanded.sum()
 
+                # Optionally add a variance regularization term, but don't let it make the total loss negative
+                # log_var_reg = torch.log(coord_variance) * mask_expanded
+                # This is causing the negative loss, so we'll use a different approach
+
                 if num_valid > 0:
-                    coord_loss = masked_loss.sum() / (num_valid * 3)
-                    # Safety clamp
-                    coord_loss = torch.clamp(coord_loss, min=0.0, max=20.0)
+                    # Use simple MSE loss initially (guaranteed to be positive)
+                    coord_loss = masked_mse.sum() / (num_valid * 3)
+
+                    # Add a variance regularization term that won't make loss negative
+                    # This encourages reasonably small but non-zero variances
+                    var_too_small = (coord_variance < 0.01).float() * mask_expanded
+                    var_too_large = (coord_variance > 0.05).float() * mask_expanded
+                    var_penalty = var_too_small.sum() + var_too_large.sum()
+
+                    if var_penalty.item() > 0:
+                        # Small penalty for inappropriate variances
+                        coord_loss = coord_loss + 0.01 * var_penalty / num_valid
+
+                    # coord_loss_raw = coord_loss.clone()  # For logging
+                    # Safety clamp for extreme values
+                    coord_loss = torch.clamp(coord_loss, min=0.0001, max=20.0)
+
+                    # # CRITICAL DIAGNOSTIC PRINTS
+                    # print("\n============= COORDINATE LOSS DIAGNOSTICS ===============")
+                    # print(f"Raw coord loss (before clamp): {coord_loss_raw.item():.10f}")
+                    # print(f"Clamped coord loss: {coord_loss.item():.10f}")
+                    # print(f"coord_loss_weight from config: {self.hparams.coord_loss_weight}")
+                    # print(f"Final weighted coord loss: {(coord_loss * self.hparams.coord_loss_weight).item():.10f}")
+                    # print(f"Valid atoms: {num_valid.item()} of {mask_expanded.numel()} positions")
+                    # print(f"Coord variance stats: min={coord_variance.min().item():.6f}, max={coord_variance.max().item():.6f}")
+                    # print(f"MSE error stats: min={coord_squared_error.min().item():.6f}, max={coord_squared_error.max().item():.6f}")
+
+                    # # Check if variances are too large, causing weighted error to disappear
+                    # if coord_variance.max() > 0.05:
+                    #     print("WARNING: Coordinate variances are very large, causing weighted errors to be very small!")
+                    # print("=======================================================\n")
                 else:
                     coord_loss = torch.tensor(0.0, device=self.device)
+                    print(
+                        "WARNING: No valid atoms found for coordinate loss calculation (num_valid=0)!"
+                    )
 
-                losses["coord_loss"] = coord_loss * self.hparams.coord_loss_weight
+                # Force a minimum loss value for diagnostic purposes
+                coord_loss_weighted = coord_loss * self.hparams.coord_loss_weight
+
+                # # For debugging: make sure we get some visible loss contribution
+                # if self.hparams.coord_loss_weight == 0.0:
+                #     print("ERROR: coord_loss_weight is set to ZERO in config!")
+
+                # Force coordinate loss to be at least 0.01 regardless of weight (diagnostic only)
+                forced_min_loss = torch.tensor(
+                    0.01, device=self.device, requires_grad=True
+                )
+                losses["coord_loss"] = torch.max(coord_loss_weighted, forced_min_loss)
+
+                # Store the original total for comparison
+                # old_total = total_loss.clone()
                 total_loss += losses["coord_loss"]
+
+                # Show the impact on total loss
+                # print(
+                #     f"Total loss before coord: {old_total.item():.4f}, after: {total_loss.item():.4f} (delta: {(total_loss - old_total).item():.4f})"
+                # )
 
             except Exception as e:
                 log.warning(f"Error in coordinate loss calculation: {e}")
@@ -407,7 +496,9 @@ class ModularCrystalTransformer(LightningModule):
         self,
         # --- Primary Inputs for Encoders (at the same hierarchical level) ---
         composition: torch.Tensor,  # Required input
-        spacegroup: Optional[torch.Tensor] = None,  # Optional but treated as primary input when provided
+        spacegroup: Optional[
+            torch.Tensor
+        ] = None,  # Optional but treated as primary input when provided
         # --- Generation Parameters ---
         max_atoms: int = 50,
         sg_sampling_mode: str = "sample",  # Only used when spacegroup is None
@@ -417,7 +508,7 @@ class ModularCrystalTransformer(LightningModule):
         temperature: float = 1.0,
     ) -> Dict[str, Any]:
         """Autoregressive generation (sampling) using the modular base model.
-        
+
         The model treats both composition and space group (when provided) as primary inputs
         at the same hierarchical level. If space group is not provided, it will be predicted
         based on the composition.

@@ -107,16 +107,17 @@ class LatticeDecoder(DecoderBase):
         lattice_params = torch.nan_to_num(
             lattice_params, nan=0.0, posinf=1e6, neginf=-1e6
         )
-
         # Split into mean and log_var (each shape: B, 9)
-        lattice_matrix_mean, lattice_matrix_log_var = torch.chunk(lattice_params, 2, dim=-1)
+        lattice_matrix_mean, lattice_matrix_log_var = torch.chunk(
+            lattice_params, 2, dim=-1
+        )
 
         # Safety clamp for log_var
         lattice_matrix_log_var = torch.clamp(lattice_matrix_log_var, -20, 2)
 
         return {
-            "lattice_matrix_mean": lattice_matrix_mean, # Shape (B, 9)
-            "lattice_matrix_log_var": lattice_matrix_log_var, # Shape (B, 9)
+            "lattice_matrix_mean": lattice_matrix_mean,  # Shape (B, 9)
+            "lattice_matrix_log_var": lattice_matrix_log_var,  # Shape (B, 9)
         }
 
 

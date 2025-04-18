@@ -160,3 +160,4 @@ uv.lock
 .DS_Store
 *.cache.json
 NOTES.md
+notebooks

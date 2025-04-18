@@ -70,11 +70,12 @@ class SpaceGroupDecoder(DecoderBase):
 
 
 class LatticeDecoder(DecoderBase):
-    """Explicitly dedicated Lattice decoder"""
+    """Explicitly dedicated Lattice decoder for predicting the 3x3 lattice matrix distribution"""
 
     def __init__(self, d_model: int):
         super().__init__(d_model)
-        self.lattice_head = nn.Linear(d_model, 6 * 2)  # mean + log_var per param
+        # Predict 9 means + 9 log_vars for the flattened 3x3 matrix
+        self.lattice_head = nn.Linear(d_model, 9 * 2)
         # Initialize with small weights for stability
         nn.init.xavier_normal_(self.lattice_head.weight, gain=0.5)
         nn.init.zeros_(self.lattice_head.bias)
@@ -85,7 +86,7 @@ class LatticeDecoder(DecoderBase):
         encoder_contexts: Dict[str, torch.Tensor],
         mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Predict lattice parameters
+        """Predict lattice matrix distribution parameters
 
         Args:
             hidden_states: Fused context for lattice (batch_size, 1, d_model)
@@ -93,13 +94,13 @@ class LatticeDecoder(DecoderBase):
             mask: Optional mask
 
         Returns:
-            Dictionary with lattice_mean and lattice_log_var
+            Dictionary with lattice_matrix_mean (B, 9) and lattice_matrix_log_var (B, 9)
         """
         # Handle sequence length > 1 case (take first token)
         if hidden_states.size(1) > 1:
             hidden_states = hidden_states[:, 0:1, :]
 
-        # Process and predict
+        # Process and predict (output shape: B, 18)
         lattice_params = self.lattice_head(hidden_states.squeeze(1))
 
         # Process and stabilize parameters
@@ -107,13 +108,16 @@ class LatticeDecoder(DecoderBase):
             lattice_params, nan=0.0, posinf=1e6, neginf=-1e6
         )
 
-        # Split into mean and log_var
-        lattice_mean, lattice_log_var = torch.chunk(lattice_params, 2, dim=-1)
+        # Split into mean and log_var (each shape: B, 9)
+        lattice_matrix_mean, lattice_matrix_log_var = torch.chunk(lattice_params, 2, dim=-1)
 
-        # Safety clamp
-        lattice_log_var = torch.clamp(lattice_log_var, -20, 2)
+        # Safety clamp for log_var
+        lattice_matrix_log_var = torch.clamp(lattice_matrix_log_var, -20, 2)
 
-        return {"lattice_mean": lattice_mean, "lattice_log_var": lattice_log_var}
+        return {
+            "lattice_matrix_mean": lattice_matrix_mean, # Shape (B, 9)
+            "lattice_matrix_log_var": lattice_matrix_log_var, # Shape (B, 9)
+        }
 
 
 class AtomTypeDecoder(DecoderBase):

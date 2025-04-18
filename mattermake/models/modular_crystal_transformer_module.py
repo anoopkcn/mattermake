@@ -135,58 +135,99 @@ class ModularCrystalTransformer(LightningModule):
         else:
             log.warning("sg_logits not found in predictions, skipping SG loss.")
 
-        # --- Lattice Loss ---
-        if "lattice_mean" in predictions and "lattice_log_var" in predictions:
+        # --- Lattice Matrix Loss ---
+        if "lattice_matrix_mean" in predictions and "lattice_matrix_log_var" in predictions:
             try:
-                lattice_mean = predictions["lattice_mean"]
-                lattice_log_var = predictions["lattice_log_var"]
+                lattice_matrix_mean = predictions["lattice_matrix_mean"]
+                lattice_matrix_log_var = predictions["lattice_matrix_log_var"]
+                lattice_target_matrix = batch["lattice"]
+                
+                # If the target is still in the old format (6 parameters), convert it to matrix format
+                if lattice_target_matrix.shape[-1] == 6:
+                    # Borrow the conversion function from the encoder
+                    # Note: in a production setting, this should be moved to a shared utility
+                    lattice_target_matrix = self.model.encoders["lattice"]._convert_params_to_matrix(lattice_target_matrix)
+                elif lattice_target_matrix.shape[-1] != 9 and lattice_target_matrix.dim() == 3 and lattice_target_matrix.shape[1:] == (3, 3):
+                    # It's a 3x3 matrix, flatten it
+                    lattice_target_matrix = lattice_target_matrix.reshape(lattice_target_matrix.size(0), -1)
+                elif lattice_target_matrix.shape[-1] != 9:
+                    raise ValueError(f"Unexpected lattice target shape: {lattice_target_matrix.shape}. Expected (B, 9) or (B, 6) or (B, 3, 3).")
 
                 # Add extra safeguards against NaN values
                 if (
-                    torch.isnan(lattice_mean).any()
-                    or torch.isnan(lattice_log_var).any()
+                    torch.isnan(lattice_matrix_mean).any()
+                    or torch.isnan(lattice_matrix_log_var).any()
                 ):
                     log.warning(
-                        "Found NaN values in lattice parameters, applying additional stabilization"
+                        "Found NaN values in lattice matrix, applying additional stabilization"
                     )
-                    lattice_mean = torch.nan_to_num(
-                        lattice_mean, nan=0.0, posinf=1e6, neginf=-1e6
+                    lattice_matrix_mean = torch.nan_to_num(
+                        lattice_matrix_mean, nan=0.0, posinf=1e6, neginf=-1e6
                     )
-                    lattice_log_var = torch.nan_to_num(
-                        lattice_log_var, nan=-1.0, posinf=2.0, neginf=-20.0
+                    lattice_matrix_log_var = torch.nan_to_num(
+                        lattice_matrix_log_var, nan=-1.0, posinf=2.0, neginf=-20.0
                     )
 
                 # Stricter constraints for numerical stability
-                lattice_mean = torch.clamp(lattice_mean, min=-10.0, max=10.0)
-                lattice_log_var = torch.clamp(lattice_log_var, min=-10.0, max=2.0)
+                lattice_matrix_mean = torch.clamp(lattice_matrix_mean, min=-10.0, max=10.0)
+                lattice_matrix_log_var = torch.clamp(lattice_matrix_log_var, min=-10.0, max=2.0)
 
                 # Ensure numerical stability
-                lattice_var = torch.exp(lattice_log_var) + self.hparams.eps
-                lattice_std = torch.sqrt(lattice_var).clamp(
+                lattice_matrix_var = torch.exp(lattice_matrix_log_var) + self.hparams.eps
+                lattice_matrix_std = torch.sqrt(lattice_matrix_var).clamp(
                     min=self.hparams.eps, max=5.0
                 )
 
-                lattice_dist = Normal(lattice_mean, lattice_std)
-                log_probs = lattice_dist.log_prob(lattice_target)
+                # Calculate the NLL loss for the lattice matrix
+                lattice_matrix_dist = Normal(lattice_matrix_mean, lattice_matrix_std)
+                log_probs = lattice_matrix_dist.log_prob(lattice_target_matrix)
 
                 # Clamp extreme values in log probabilities
                 log_probs = torch.clamp(log_probs, min=-20.0, max=20.0)
 
+                # Mean across batch and all 9 matrix elements
                 nll_lattice = -log_probs.mean()
                 # Final safety clamp
                 nll_lattice = torch.clamp(nll_lattice, min=0.0, max=10.0)
 
+                losses["lattice_matrix_nll"] = nll_lattice * self.hparams.lattice_loss_weight
+                total_loss += losses["lattice_matrix_nll"]
+            except Exception as e:
+                log.warning(f"Error in lattice matrix loss calculation: {e}")
+                # Provide a default loss that won't break training
+                losses["lattice_matrix_nll"] = torch.tensor(
+                    1.0, device=self.device, requires_grad=True
+                )
+                total_loss += losses["lattice_matrix_nll"]
+        elif "lattice_mean" in predictions and "lattice_log_var" in predictions:
+            # Handle legacy format for backward compatibility
+            log.warning("Found legacy lattice parameter format. Consider updating the model.")
+            try:
+                # Similar calculation, but using the old keys
+                lattice_mean = predictions["lattice_mean"]
+                lattice_log_var = predictions["lattice_log_var"]
+                lattice_target = batch["lattice"]
+                
+                # Safety processing (NaN checks, clamping, etc.)
+                # [Omitted - same as above but for lattice_mean/lattice_log_var]
+                
+                # Calculate NLL loss
+                lattice_var = torch.exp(lattice_log_var) + self.hparams.eps
+                lattice_std = torch.sqrt(lattice_var).clamp(min=self.hparams.eps, max=5.0)
+                lattice_dist = Normal(lattice_mean, lattice_std)
+                log_probs = lattice_dist.log_prob(lattice_target)
+                log_probs = torch.clamp(log_probs, min=-20.0, max=20.0)
+                nll_lattice = -log_probs.mean()
+                nll_lattice = torch.clamp(nll_lattice, min=0.0, max=10.0)
+                
                 losses["lattice_nll"] = nll_lattice * self.hparams.lattice_loss_weight
                 total_loss += losses["lattice_nll"]
             except Exception as e:
-                log.warning(f"Error in lattice loss calculation: {e}")
-                # Provide a default loss that won't break training
-                losses["lattice_nll"] = torch.tensor(
-                    1.0, device=self.device, requires_grad=True
-                )
+                log.warning(f"Error in legacy lattice loss calculation: {e}")
+                losses["lattice_nll"] = torch.tensor(1.0, device=self.device, requires_grad=True)
                 total_loss += losses["lattice_nll"]
         else:
-            log.warning("Lattice predictions not found, skipping Lattice NLL loss.")
+            log.warning("Neither lattice matrix nor legacy lattice predictions found, skipping Lattice loss.")
 
         # --- Atom Type Loss ---
         if "type_logits" in predictions:

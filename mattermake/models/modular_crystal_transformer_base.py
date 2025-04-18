@@ -277,11 +277,12 @@ class ModularCrystalTransformerBase(nn.Module):
         # Note: Composition and space group are at the same hierarchical level
         sg_target = batch["spacegroup"]  # Values should be 1-230
 
-        # --- 1c. Process secondary/dependent property: lattice parameters ---
+        # --- 1c. Process secondary/dependent property: lattice matrix ---
         # (depends on composition and space group)
-        lattice_target = batch["lattice"]
-        if torch.isnan(lattice_target).any():
-            lattice_target = torch.nan_to_num(lattice_target, nan=0.0)
+        # IMPORTANT: Assumes batch["lattice"] now contains the 3x3 matrix or flattened 9 elements
+        lattice_matrix_target = batch["lattice"]
+        if torch.isnan(lattice_matrix_target).any():
+            lattice_matrix_target = torch.nan_to_num(lattice_matrix_target, nan=0.0)
 
         # --- 1d. Process atom sequence inputs ---
         atom_types_target = batch["atom_types"]
@@ -316,8 +317,8 @@ class ModularCrystalTransformerBase(nn.Module):
                     output = encoder(composition, condition_context)
                 elif name == "spacegroup":
                     output = encoder(sg_target, condition_context)
-                elif name == "lattice":
-                    output = encoder(lattice_target, condition_context)
+                elif name == "lattice": # Now encodes the matrix
+                    output = encoder(lattice_matrix_target, condition_context)
                 elif name == "atom_type":
                     # Use teacher forcing (shifted right for decoder inputs)
                     atom_types_input = atom_types_target[:, :-1]
@@ -375,6 +376,7 @@ class ModularCrystalTransformerBase(nn.Module):
         sg_outputs = sg_decoder(comp_context, global_encoder_outputs, None)
 
         # Create the global context by fusing encoder contexts
+        # This context is now used for lattice matrix prediction
         global_context = self.global_modular_cross_attn(
             query=comp_context, encoder_outputs=global_encoder_outputs
         )
@@ -385,8 +387,9 @@ class ModularCrystalTransformerBase(nn.Module):
                 global_context, nan=0.0, posinf=1e6, neginf=-1e6
             )
 
-        # Run lattice decoder with fused global context
+        # Run lattice decoder (predicts matrix distribution) with fused global context
         lattice_decoder = self.decoder_registry.decoders["lattice"]
+        # lattice_outputs will contain 'lattice_matrix_mean' and 'lattice_matrix_log_var'
         lattice_outputs = lattice_decoder(global_context, global_encoder_outputs, None)
 
         # --- Step 4: Atom Sequence Decoding (Teacher Forcing) ---
@@ -676,21 +679,24 @@ class ModularCrystalTransformerBase(nn.Module):
                 global_context, nan=0.0, posinf=1e6, neginf=-1e6
             )
 
-        # Run lattice decoder
+        # Run lattice decoder (predicts matrix distribution)
         lattice_decoder = self.decoder_registry.decoders["lattice"]
         lattice_outputs = lattice_decoder(global_context, global_encoder_outputs, None)
-        lattice_mean = lattice_outputs["lattice_mean"]
-        lattice_log_var = lattice_outputs["lattice_log_var"]
+        # These have shape (B, 9)
+        lattice_matrix_mean = lattice_outputs["lattice_matrix_mean"]
+        lattice_matrix_log_var = lattice_outputs["lattice_matrix_log_var"]
 
-        # Sample lattice parameters
+        # Sample lattice matrix elements
         if lattice_sampling_mode == "mean":
-            lattice_sampled = lattice_mean
+            lattice_matrix_sampled_flat = lattice_matrix_mean
         else:
-            lattice_std = torch.exp(0.5 * lattice_log_var)
-            lattice_dist = Normal(lattice_mean, lattice_std)
-            lattice_sampled = lattice_dist.sample()
+            lattice_matrix_std = torch.exp(0.5 * lattice_matrix_log_var)
+            # Ensure std dev is reasonable
+            lattice_matrix_std = torch.clamp(lattice_matrix_std, min=1e-6, max=5.0)
+            lattice_matrix_dist = Normal(lattice_matrix_mean, lattice_matrix_std)
+            lattice_matrix_sampled_flat = lattice_matrix_dist.sample()
 
-        # Encode the sampled lattice parameters
+        # Encode the sampled lattice matrix
         if "lattice" in self.encoders:
             # Check if lattice encoder has dependencies
             condition_context = None
@@ -705,7 +711,8 @@ class ModularCrystalTransformerBase(nn.Module):
                 if dep_contexts:
                     condition_context = self._fuse_contexts(dep_contexts)
             
-            lattice_context = self.encoders["lattice"](lattice_sampled.to(device), condition_context)
+            # Pass the sampled matrix (flattened) to the encoder
+            lattice_context = self.encoders["lattice"](lattice_matrix_sampled_flat.to(device), condition_context)
             global_encoder_outputs["lattice"] = lattice_context
 
         # --- Step 4: Autoregressive Atom Sequence Generation ---
@@ -863,10 +870,12 @@ class ModularCrystalTransformerBase(nn.Module):
             )
 
         # --- Step 5: Collect results ---
+        # Reshape sampled lattice matrix back to 3x3
+        lattice_matrix_sampled = lattice_matrix_sampled_flat.reshape(3, 3)
         results = {
             "composition": composition.squeeze(0).cpu(),
             "spacegroup_sampled": sg_sampled.squeeze(0).cpu(),
-            "lattice_sampled": lattice_sampled.squeeze(0).cpu(),
+            "lattice_matrix_sampled": lattice_matrix_sampled.cpu(), # Return 3x3 matrix
             "atom_types_generated": torch.tensor(
                 generated_types, dtype=torch.long, device="cpu"
             ),

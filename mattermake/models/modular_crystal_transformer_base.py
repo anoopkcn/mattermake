@@ -268,15 +268,17 @@ class ModularCrystalTransformerBase(nn.Module):
         batch_size = batch["composition"].size(0)
         device = self.device
 
-        # --- 1a. Process composition ---
+        # --- 1a. Process primary input: composition ---
         composition = batch["composition"].float()
         if torch.isnan(composition).any():
             composition = torch.nan_to_num(composition, nan=0.0)
 
-        # --- 1b. Process space group ---
+        # --- 1b. Process primary input: space group ---
+        # Note: Composition and space group are at the same hierarchical level
         sg_target = batch["spacegroup"]  # Values should be 1-230
 
-        # --- 1c. Process lattice parameters ---
+        # --- 1c. Process secondary/dependent property: lattice parameters ---
+        # (depends on composition and space group)
         lattice_target = batch["lattice"]
         if torch.isnan(lattice_target).any():
             lattice_target = torch.nan_to_num(lattice_target, nan=0.0)
@@ -544,13 +546,12 @@ class ModularCrystalTransformerBase(nn.Module):
     @torch.no_grad()
     def generate(
         self,
-        # --- Required Inputs for Encoders ---
-        composition: torch.Tensor,  # (1, V_elem)
-        # --- Optional Inputs for other potential encoders ---
-        spacegroup: Optional[torch.Tensor] = None,  # Example: (1, 1)
+        # --- Primary Inputs for Encoders (at the same hierarchical level) ---
+        composition: torch.Tensor,  # (1, V_elem) - Required input
+        spacegroup: Optional[torch.Tensor] = None,  # (1, 1) - Optional but treated as primary input when provided
         # --- Generation Parameters ---
         max_atoms: int = 50,
-        sg_sampling_mode: str = "sample",
+        sg_sampling_mode: str = "sample",  # Only used when spacegroup is None
         lattice_sampling_mode: str = "sample",
         atom_discrete_sampling_mode: str = "sample",  # For type sampling
         coord_sampling_mode: str = "sample",
@@ -614,8 +615,11 @@ class ModularCrystalTransformerBase(nn.Module):
                 # Generic fallback for any other global encoders
                 print(f"Warning: Encoder '{name}' not handled specifically in generate. Skipping.")
 
-        # --- Step 2: Predict and Sample Space Group (if not provided) ---
+        # --- Step 2: Process Space Group (use provided or generate) ---
+        # Space group is treated as a primary input at the same hierarchical level as composition
+        # When provided directly, we use it; when not provided, we predict it from composition
         if spacegroup is None:
+            # Space group not provided - predict it from composition
             # Get composition context for space group prediction
             comp_context = global_encoder_outputs.get(
                 "composition", torch.zeros((bs, 1, self.d_model), device=device)
@@ -643,8 +647,15 @@ class ModularCrystalTransformerBase(nn.Module):
                 )
                 global_encoder_outputs["spacegroup"] = sg_context
         else:
-            # Use the provided space group
+            # Use the provided space group directly
             sg_sampled = spacegroup
+            
+            # Ensure we've encoded this primary input if it wasn't done in Step 1
+            if "spacegroup" not in global_encoder_outputs and "spacegroup" in self.encoders:
+                sg_context = self.encoders["spacegroup"](
+                    sg_sampled.to(device)
+                )
+                global_encoder_outputs["spacegroup"] = sg_context
 
         # --- Step 3: Predict and Sample Lattice ---
         # Create global context for lattice prediction by fusing encoder outputs

@@ -364,20 +364,23 @@ class ModularCrystalTransformer(LightningModule):
     @torch.no_grad()
     def generate(
         self,
-        # --- Required Inputs for Encoders ---
-        composition: torch.Tensor,
-        # --- Optional Inputs for other potential encoders ---
-        spacegroup: Optional[torch.Tensor] = None,
-        # ... add other conditioning inputs as needed
+        # --- Primary Inputs for Encoders (at the same hierarchical level) ---
+        composition: torch.Tensor,  # Required input
+        spacegroup: Optional[torch.Tensor] = None,  # Optional but treated as primary input when provided
         # --- Generation Parameters ---
         max_atoms: int = 50,
-        sg_sampling_mode: str = "sample",
+        sg_sampling_mode: str = "sample",  # Only used when spacegroup is None
         lattice_sampling_mode: str = "sample",
         atom_discrete_sampling_mode: str = "sample",
         coord_sampling_mode: str = "sample",
         temperature: float = 1.0,
     ) -> Dict[str, Any]:
-        """Autoregressive generation (sampling) using the modular base model."""
+        """Autoregressive generation (sampling) using the modular base model.
+        
+        The model treats both composition and space group (when provided) as primary inputs
+        at the same hierarchical level. If space group is not provided, it will be predicted
+        based on the composition.
+        """
         log.info(f"Generating crystal structure with max_atoms={max_atoms}")
         log.info(
             f"Sampling modes: SG={sg_sampling_mode}, lattice={lattice_sampling_mode}, atoms={atom_discrete_sampling_mode}, coords={coord_sampling_mode}"

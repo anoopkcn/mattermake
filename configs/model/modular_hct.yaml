@@ -22,20 +22,28 @@ dropout: 0.1
 # --- Encoder Configuration ---
 # Define all modular encoders and their specific parameters
 encoder_configs:
+  # Primary Input Encoders (Independent, at the same hierarchical level)
   composition:
+    # Encodes element composition vector
     # Uses element_vocab_size from above
     # Uses d_model, nhead, dim_feedforward, dropout from above
     num_layers: 2 # Specific to this encoder
   spacegroup:
+    # Encodes space group number (1-230)
+    # Both composition and spacegroup are at the same hierarchical level
+    # and can be provided as independent inputs
     # Uses sg_vocab_size from above
     # Uses d_model from above
     embed_dim: 64 # Specific embedding dim for spacegroup before projection
+  
+  # Secondary/Dependent Encoders
   lattice:
     # Lattice parameter encoder
     latent_dim: 64 # Dimension of intermediate lattice representation
     equivariant: false # Use non-equivariant version for now
     has_conditioning: true # Enable conditioning
-    depends_on: ["spacegroup"] # Depend on the SpaceGroup encoder
+    # Lattice depends on both composition and spacegroup
+    depends_on: ["composition", "spacegroup"] # Both primary inputs influence lattice
   atom_type:
     # New dedicated atom type encoder
     element_vocab_size: ${model.element_vocab_size}
@@ -48,6 +56,7 @@ encoder_configs:
     start_idx: ${model.start_idx}
     end_idx: ${model.end_idx}
     has_conditioning: true # Enable conditioning
+    # Depend on both primary inputs (composition, spacegroup) and derived properties (lattice)
     depends_on: ["composition", "spacegroup", "lattice"] # Depend on all global encoders
   coordinate:
     # New dedicated coordinate encoder
@@ -57,6 +66,7 @@ encoder_configs:
     dim_feedforward: ${model.dim_feedforward}
     dropout: ${model.dropout}
     has_conditioning: true # Enable conditioning
+    # Depend on both primary inputs (composition, spacegroup) and derived properties (lattice)
     depends_on: ["composition", "spacegroup", "lattice"] # Depend on all global encoders
 
 # --- Optimizer & Loss Params ---

@@ -8,7 +8,6 @@ from mattermake.models.components.modular_encoders import (
     LatticeEncoder,
     AtomTypeEncoder,
     AtomCoordinateEncoder,
-    # Import other encoders here if added later
 )
 from mattermake.models.components.modular_decoders import (
     SpaceGroupDecoder,
@@ -16,8 +15,8 @@ from mattermake.models.components.modular_decoders import (
     AtomTypeDecoder,
     AtomCoordinateDecoder,
     OrderedDecoderRegistry,
-    # Import other decoders here if added later
 )
+
 from mattermake.models.components.modular_attention import ModularCrossAttention
 from mattermake.models.components.positional_embeddings import RotaryPositionalEmbedding
 

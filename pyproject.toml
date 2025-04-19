@@ -1,6 +1,6 @@
 [project]
 name = "mattermake"
-version = "0.1.2"
+version = "0.3.1"
 description = "A generative model for solid-state materials"
 readme = "README.md"
 requires-python = ">=3.11, <3.13"
@@ -15,14 +15,12 @@ dependencies = [
     "pytest>=8.3.4",
     "rich>=13.9.4",
     "rootutils>=1.0.7",
-    "scikit-learn>=1.6.1",
-    "spglib>=2.6.0",
     "torch>=2.0.0",
     "torch-geometric>=2.6.1",
     "torchmetrics>=0.11.4",
     "torchvision>=0.15.0",
     "wandb>=0.19.7",
-    "wyckoff>=0.1.3",
+    "wyckoff>=0.3.2",
 ]
 
 [dependency-groups]

@@ -572,7 +572,7 @@ class ModularCrystalTransformerBase(nn.Module):
         start_coord_token: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
         """Autoregressive generation (sampling) using the fully modular architecture"""
-        from torch.distributions import Normal  # Local import
+        from torch.distributions import Normal
 
         bs = composition.size(0)
         if bs != 1:

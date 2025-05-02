@@ -2,7 +2,7 @@
 _target_: mattermake.data.hct_datamodule.HCTDataModule
 
 # Data paths
-processed_data_dir: ${paths.data_dir}/hct_data_20k
+processed_data_dir: ${paths.data_dir}/hct_data_30k
 
 # DataLoader parameters
 batch_size: 32

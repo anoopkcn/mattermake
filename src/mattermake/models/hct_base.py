@@ -33,7 +33,7 @@ class HierarchicalCrystalTransformerBase(nn.Module):
     cross-attention for atom decoding, and distributional outputs for
     lattice (Normal) and coordinates (Von Mises). Handles space group
     as a categorical distribution.
-    
+
     Assumes PAD=0, START=-1, END=-2 token scheme and valid indices >= 1
     in the preprocessed data.
     """
@@ -65,29 +65,33 @@ class HierarchicalCrystalTransformerBase(nn.Module):
         **kwargs,
     ):
         super().__init__()
-        self.hparams = {k: v for k, v in locals().items() if k != 'self' and k != 'kwargs' and k != '__class__'}
+        self.hparams = {
+            k: v
+            for k, v in locals().items()
+            if k != "self" and k != "kwargs" and k != "__class__"
+        }
         self.hparams.update(kwargs)
         self.eps = eps  # Store eps
 
         # --- Input Processing / Encoders / Projectors ---
 
         # 1. Composition Encoder
-        self.comp_processor = nn.Linear(self.hparams['element_vocab_size'], d_model)
+        self.comp_processor = nn.Linear(self.hparams["element_vocab_size"], d_model)
         comp_encoder_layer = nn.TransformerEncoderLayer(
             d_model, nhead, dim_feedforward, dropout, batch_first=True
         )
         self.comp_encoder = nn.TransformerEncoder(
-            comp_encoder_layer, self.hparams['num_comp_encoder_layers']
+            comp_encoder_layer, self.hparams["num_comp_encoder_layers"]
         )
 
         # 2. Space Group Representation
         # Embedding for SG (input 0-230 -> index 0-230)
         # Note: Ensure sg_vocab_size includes an index for 0 if used/needed.
         self.sg_embedding = nn.Embedding(
-            self.hparams['sg_vocab_size'], self.hparams['sg_embed_dim']
+            self.hparams["sg_vocab_size"], self.hparams["sg_embed_dim"]
         )
         # Project SG embedding to d_model
-        self.sg_projector = nn.Linear(self.hparams['sg_embed_dim'], d_model)
+        self.sg_projector = nn.Linear(self.hparams["sg_embed_dim"], d_model)
 
         # 3. Lattice Representation
         # Project 6 lattice params to d_model
@@ -97,9 +101,9 @@ class HierarchicalCrystalTransformerBase(nn.Module):
         # Calculate effective vocab sizes for atom embeddings including PAD, START, END
         # Assumes element_vocab_size = max_Z, wyckoff_vocab_size = max_valid_idx + 1
         # These calculations need careful verification based on actual data range & config values
-        self._max_element_idx = self.hparams['element_vocab_size']  # Max Z (e.g., 100)
+        self._max_element_idx = self.hparams["element_vocab_size"]  # Max Z (e.g., 100)
         self._max_wyckoff_idx = (
-            self.hparams['wyckoff_vocab_size'] - 1
+            self.hparams["wyckoff_vocab_size"] - 1
         )  # Max valid index (e.g., 199)
         # Map: PAD(0)->0, Valid(1..N)->1..N, START(-1)->N+1, END(-2)->N+2
         self.effective_type_vocab_size = (
@@ -116,17 +120,19 @@ class HierarchicalCrystalTransformerBase(nn.Module):
 
         self.type_embedding = nn.Embedding(
             self.effective_type_vocab_size,
-            self.hparams['type_embed_dim'],
-            padding_idx=self.hparams['pad_idx'],
+            self.hparams["type_embed_dim"],
+            padding_idx=self.hparams["pad_idx"],
         )
         self.wyckoff_embedding = nn.Embedding(
             self.effective_wyckoff_vocab_size,
-            self.hparams['wyckoff_embed_dim'],
-            padding_idx=self.hparams['pad_idx'],
+            self.hparams["wyckoff_embed_dim"],
+            padding_idx=self.hparams["pad_idx"],
         )
 
         # Combine atom step info (type emb + wyckoff emb + coords) and project
-        atom_step_dim = self.hparams['type_embed_dim'] + self.hparams['wyckoff_embed_dim'] + 3
+        atom_step_dim = (
+            self.hparams["type_embed_dim"] + self.hparams["wyckoff_embed_dim"] + 3
+        )
         self.atom_input_proj = nn.Linear(atom_step_dim, d_model)
         self.atom_pos_encoder = PositionalEncoding(d_model, dropout)
 
@@ -135,16 +141,16 @@ class HierarchicalCrystalTransformerBase(nn.Module):
             d_model, nhead, dim_feedforward, dropout, batch_first=True
         )
         self.atom_decoder = nn.TransformerDecoder(
-            atom_decoder_layer, self.hparams['num_atom_decoder_layers']
+            atom_decoder_layer, self.hparams["num_atom_decoder_layers"]
         )
 
         # --- Prediction Heads (Modified for Distributions) ---
         # Predict SG logits (index 0-230 or 0-229?) -> Map to 1-230
-        self.sg_head = nn.Linear(d_model, self.hparams['sg_vocab_size'])
+        self.sg_head = nn.Linear(d_model, self.hparams["sg_vocab_size"])
 
         # Lattice Head: Predicts 6 means and 6 log_vars for diagonal Normal
         lattice_cond_dim = d_model
-        if self.hparams['condition_lattice_on_sg']:
+        if self.hparams["condition_lattice_on_sg"]:
             # Context dim needs careful checking depending on how context is combined (cat/add)
             lattice_cond_dim += d_model  # Assuming concatenation for simplicity
             # Alternative: Use cross attention layer before the head
@@ -158,7 +164,7 @@ class HierarchicalCrystalTransformerBase(nn.Module):
         self.wyckoff_head = nn.Linear(d_model, self.effective_wyckoff_vocab_size)
         # Coord Head: Predicts loc and concentration for Von Mises per x, y, z
         self.coord_head = nn.Linear(d_model, 3 * 2)  # (loc, concentration) per dim
-        
+
     def _map_indices_for_embedding(
         self, indices: torch.Tensor, is_type: bool
     ) -> torch.Tensor:
@@ -169,16 +175,16 @@ class HierarchicalCrystalTransformerBase(nn.Module):
         end_embed_idx = (
             self.type_end_embed_idx if is_type else self.wyckoff_end_embed_idx
         )
-        
+
         # Get the maximum valid index for this type of token
         max_valid_idx = self._max_element_idx if is_type else self._max_wyckoff_idx
 
         mapped_indices = indices.clone()
         # Map special tokens first
-        mapped_indices[indices == self.hparams['start_idx']] = start_embed_idx
-        mapped_indices[indices == self.hparams['end_idx']] = end_embed_idx
+        mapped_indices[indices == self.hparams["start_idx"]] = start_embed_idx
+        mapped_indices[indices == self.hparams["end_idx"]] = end_embed_idx
         # Ensure PAD remains 0
-        mapped_indices[indices == self.hparams['pad_idx']] = self.hparams['pad_idx']
+        mapped_indices[indices == self.hparams["pad_idx"]] = self.hparams["pad_idx"]
         # Handle valid indices (>=1) - clamp to ensure they're within bounds
         valid_mask = indices >= 1
         # Clamp the indices to be at most max_valid_idx to prevent out-of-bounds access
@@ -216,7 +222,7 @@ class HierarchicalCrystalTransformerBase(nn.Module):
 
         # --- Stage 3: Lattice Prediction & Encoding ---
         # Prepare context for lattice prediction
-        if self.hparams['condition_lattice_on_sg']:
+        if self.hparams["condition_lattice_on_sg"]:
             # Combine Comp and SG context
             # Simple concatenation along feature dim for linear head
             combined_context_features = torch.cat(
@@ -277,26 +283,37 @@ class HierarchicalCrystalTransformerBase(nn.Module):
 
         # Prepare Masks for Atom Decoder
         tgt_len = atom_decoder_input.size(1)  # T-1
-        
+
         # Check if we have a valid sequence length
         if tgt_len <= 0:
             # Handle the case where sequence length is invalid
             batch_size = atom_decoder_input.size(0)
             return {
-                "sg_logits": self.sg_head(comp_memory.squeeze(1)),  # Still provide SG logits
+                "sg_logits": self.sg_head(
+                    comp_memory.squeeze(1)
+                ),  # Still provide SG logits
                 "lattice_mean": torch.zeros((batch_size, 6), device=self.device),
                 "lattice_log_var": torch.zeros((batch_size, 6), device=self.device),
-                "type_logits": torch.zeros((batch_size, 0, self.effective_type_vocab_size), device=self.device),
-                "wyckoff_logits": torch.zeros((batch_size, 0, self.effective_wyckoff_vocab_size), device=self.device),
+                "type_logits": torch.zeros(
+                    (batch_size, 0, self.effective_type_vocab_size), device=self.device
+                ),
+                "wyckoff_logits": torch.zeros(
+                    (batch_size, 0, self.effective_wyckoff_vocab_size),
+                    device=self.device,
+                ),
                 "coord_loc": torch.zeros((batch_size, 0, 3), device=self.device),
-                "coord_concentration": torch.zeros((batch_size, 0, 3), device=self.device),
+                "coord_concentration": torch.zeros(
+                    (batch_size, 0, 3), device=self.device
+                ),
             }
-        
+
         tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt_len).to(
             self.device
         )  # Causal mask (T-1, T-1)
         # Convert boolean mask to the same dtype as tgt_mask to avoid warning
-        tgt_key_padding_mask = (~atom_mask_input).to(tgt_mask.dtype)  # Float tensor (True where padded) (b, T-1)
+        tgt_key_padding_mask = (~atom_mask_input).to(
+            tgt_mask.dtype
+        )  # Float tensor (True where padded) (b, T-1)
         memory_key_padding_mask = None  # Context length is fixed
 
         # Run Atom Decoder
@@ -337,7 +354,7 @@ class HierarchicalCrystalTransformerBase(nn.Module):
     @property
     def device(self):
         return next(self.parameters()).device
-        
+
     @torch.no_grad()
     def generate(
         self,
@@ -374,7 +391,7 @@ class HierarchicalCrystalTransformerBase(nn.Module):
         predicted_sg_num = predicted_sg_idx + 1
 
         # --- Stage 3: Lattice Distribution & Sampling/Mean ---
-        if self.hparams['condition_lattice_on_sg']:
+        if self.hparams["condition_lattice_on_sg"]:
             combined_context_features = torch.cat(
                 [comp_memory.squeeze(1), sg_proj.squeeze(1)], dim=-1
             )
@@ -404,10 +421,10 @@ class HierarchicalCrystalTransformerBase(nn.Module):
         )  # (1, 3, d)
         # Initialize with START tokens/coords
         start_type_raw = torch.tensor(
-            [[self.hparams['start_idx']]], dtype=torch.long, device=device
+            [[self.hparams["start_idx"]]], dtype=torch.long, device=device
         )
         start_wyckoff_raw = torch.tensor(
-            [[self.hparams['start_idx']]], dtype=torch.long, device=device
+            [[self.hparams["start_idx"]]], dtype=torch.long, device=device
         )
         start_coords = torch.zeros(
             (1, 1, 3), dtype=torch.float, device=device
@@ -449,7 +466,7 @@ class HierarchicalCrystalTransformerBase(nn.Module):
                     "generated_wyckoffs": [],
                     "generated_coords": [],  # fractional [0, 1)
                 }
-                
+
             tgt_mask = nn.Transformer.generate_square_subsequent_mask(current_len).to(
                 device
             )
@@ -509,11 +526,11 @@ class HierarchicalCrystalTransformerBase(nn.Module):
                     self.type_end_embed_idx if is_type else self.wyckoff_end_embed_idx
                 )
                 if embed_idx == start_embed:
-                    return self.hparams['start_idx']
+                    return self.hparams["start_idx"]
                 if embed_idx == end_embed:
-                    return self.hparams['end_idx']
-                if embed_idx == self.hparams['pad_idx']:
-                    return self.hparams['pad_idx']
+                    return self.hparams["end_idx"]
+                if embed_idx == self.hparams["pad_idx"]:
+                    return self.hparams["pad_idx"]
                 # Clamp embed_idx just in case prediction is out of bounds before check
                 embed_idx_item = embed_idx.clamp(min=0).item()
                 if 1 <= embed_idx_item <= max_valid:
@@ -521,19 +538,19 @@ class HierarchicalCrystalTransformerBase(nn.Module):
                 print(
                     f"Warning: Unexpected embed index predicted: {embed_idx.item()}, mapping to END."
                 )
-                return self.hparams['end_idx']
+                return self.hparams["end_idx"]
 
             next_type_raw = reverse_map(next_type_embed_idx, is_type=True)
             next_wyckoff_raw = reverse_map(next_wyckoff_embed_idx, is_type=False)
 
             # Check for END token
-            if next_type_raw == self.hparams['end_idx']:
+            if next_type_raw == self.hparams["end_idx"]:
                 break
 
             # Store generated atom (use original indices and sampled frac coords)
             if (
-                next_type_raw != self.hparams['start_idx']
-                and next_type_raw != self.hparams['pad_idx']
+                next_type_raw != self.hparams["start_idx"]
+                and next_type_raw != self.hparams["pad_idx"]
             ):
                 generated_types_raw.append(next_type_raw)
                 generated_wyckoffs_raw.append(next_wyckoff_raw)

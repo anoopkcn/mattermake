@@ -158,3 +158,5 @@ configs/local/default.yaml
 uv.lock
 .env.*
 .DS_Store
+zenv
+zenv.json

@@ -62,69 +62,69 @@ def process_dataframe(
     vocab_size: int = VOCAB_SIZE,
 ):
     """Process dataframe and split into train/val/test sets, saving a single file per split."""
-    assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6, "Ratios must sum to 1"
-    
+    assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6, (
+        "Ratios must sum to 1"
+    )
+
     log.info(f"Processing dataframe with {len(df)} entries")
     log.info(f"Output will be saved to {output_dir}")
     log.info(f"Split ratios: train={train_ratio}, val={val_ratio}, test={test_ratio}")
-    
+
     # Create output directory
     output_path = Path(output_dir)
     output_path.mkdir(exist_ok=True, parents=True)
-    
+
     # Shuffle and split the dataframe
     df = df.sample(frac=1, random_state=42).reset_index(drop=True)
     n_samples = len(df)
-    
+
     train_end = int(n_samples * train_ratio)
     val_end = train_end + int(n_samples * val_ratio)
-    
+
     train_df = df.iloc[:train_end]
     val_df = df.iloc[train_end:val_end]
     test_df = df.iloc[val_end:]
-    
-    log.info(f"Split sizes: train={len(train_df)}, val={len(val_df)}, test={len(test_df)}")
-    
+
+    log.info(
+        f"Split sizes: train={len(train_df)}, val={len(val_df)}, test={len(test_df)}"
+    )
+
     # Process each split
-    splits = [
-        ("train", train_df),
-        ("val", val_df),
-        ("test", test_df)
-    ]
-    
+    splits = [("train", train_df), ("val", val_df), ("test", test_df)]
+
     for split_name, split_df in splits:
         log.info(f"Processing {split_name} set with {len(split_df)} structures")
-        
+
         # Create a list to hold all processed structures
         all_structures = []
         processed_count = 0
-        
-        # Process each structure 
+
+        # Process each structure
         for _, row in tqdm(split_df.iterrows(), total=len(split_df)):
             material_id = row["material_id"]
             cif_string = row["cif"]
             processed = process_structure(material_id, cif_string, vocab_size)
-            
+
             if processed:
                 all_structures.append(processed)
                 processed_count += 1
-                
+
                 # Log progress every 100 structures
                 if processed_count % 100 == 0:
-                    log.info(f"Processed {processed_count}/{len(split_df)} structures in {split_name} set")
-        
+                    log.info(
+                        f"Processed {processed_count}/{len(split_df)} structures in {split_name} set"
+                    )
+
         # Save all structures for this split to a single file
         output_file = output_path / f"{split_name}.pt"
         log.info(f"Saving {len(all_structures)} processed structures to {output_file}")
         torch.save(all_structures, output_file)
-        
-        log.info(f"Finished processing {split_name} set. Total processed: {len(all_structures)}")
-    
-    return {
-        "train": len(train_df),
-        "val": len(val_df),
-        "test": len(test_df)
-    }
+
+        log.info(
+            f"Finished processing {split_name} set. Total processed: {len(all_structures)}"
+        )
+
+    return {"train": len(train_df), "val": len(val_df), "test": len(test_df)}
 
 
 if __name__ == "__main__":
@@ -138,16 +138,13 @@ if __name__ == "__main__":
         help="Input CSV file with columns material_id,cif",
     )
     parser.add_argument(
-        "--output_dir", 
-        type=str, 
-        required=True, 
-        help="Output directory for processed data, will create train/val/test subdirectories"
+        "--output_dir",
+        type=str,
+        required=True,
+        help="Output directory for processed data, will create train/val/test subdirectories",
     )
     parser.add_argument(
-        "--vocab_size", 
-        type=int, 
-        default=VOCAB_SIZE, 
-        help="Element vocabulary size"
+        "--vocab_size", type=int, default=VOCAB_SIZE, help="Element vocabulary size"
     )
     parser.add_argument(
         "--num_structures",
@@ -180,7 +177,7 @@ if __name__ == "__main__":
     log.info(f"Input CSV: {args.input_csv}")
     log.info(f"Output directory: {args.output_dir}")
     log.info(f"Vocabulary size: {args.vocab_size}")
-    
+
     # Validate split ratios
     total_ratio = args.train_ratio + args.val_ratio + args.test_ratio
     if abs(total_ratio - 1.0) > 1e-6:
@@ -188,7 +185,7 @@ if __name__ == "__main__":
         args.train_ratio /= total_ratio
         args.val_ratio /= total_ratio
         args.test_ratio /= total_ratio
-    
+
     if args.num_structures is not None:
         log.info(f"Number of structures to be processed: {args.num_structures}")
 
@@ -198,10 +195,10 @@ if __name__ == "__main__":
         df = df.head(args.num_structures)
 
     process_dataframe(
-        df, 
-        args.output_dir, 
+        df,
+        args.output_dir,
         train_ratio=args.train_ratio,
         val_ratio=args.val_ratio,
         test_ratio=args.test_ratio,
-        vocab_size=args.vocab_size
+        vocab_size=args.vocab_size,
     )

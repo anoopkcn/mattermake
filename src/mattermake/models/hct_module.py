@@ -236,7 +236,12 @@ class HierarchicalCrystalTransformer(LightningModule):
         predictions = self(batch)
         losses = self.calculate_loss(predictions, batch)
         batch_size = batch["composition"].size(0)
-        log_opts = {"on_step": False, "on_epoch": True, "batch_size": batch_size, "sync_dist": True}
+        log_opts = {
+            "on_step": False,
+            "on_epoch": True,
+            "batch_size": batch_size,
+            "sync_dist": True,
+        }
         self.log_dict({f"val/{k}": v for k, v in losses.items()}, **log_opts)
         if batch_idx % 100 == 0:
             log.info(f"Validation batch {batch_idx}, loss: {losses['total_loss']:.4f}")
@@ -246,7 +251,12 @@ class HierarchicalCrystalTransformer(LightningModule):
         predictions = self(batch)
         losses = self.calculate_loss(predictions, batch)
         batch_size = batch["composition"].size(0)
-        log_opts = {"on_step": False, "on_epoch": True, "batch_size": batch_size, "sync_dist": True}
+        log_opts = {
+            "on_step": False,
+            "on_epoch": True,
+            "batch_size": batch_size,
+            "sync_dist": True,
+        }
         self.log_dict({f"test/{k}": v for k, v in losses.items()}, **log_opts)
         if batch_idx % 100 == 0:
             log.info(f"Test batch {batch_idx}, loss: {losses['total_loss']:.4f}")

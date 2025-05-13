@@ -160,3 +160,4 @@ uv.lock
 .DS_Store
 zenv
 zenv.json
+notebooks

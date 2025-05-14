@@ -21,7 +21,7 @@ from mattermake.models.components.modular_attention import ModularCrossAttention
 from mattermake.models.components.positional_embeddings import RotaryPositionalEmbedding
 
 
-class ModularCrystalTransformerBase(nn.Module):
+class ModularHierarchicalCrystalTransformerBase(nn.Module):
     """
     Fully modular crystal transformer with separate encoders and decoders for all components.
     Generates lattice params, atom types, and coordinates with dedicated modular components.

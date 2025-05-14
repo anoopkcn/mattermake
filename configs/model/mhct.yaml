@@ -1,6 +1,4 @@
-# mattermake/configs/model/modular_hct.yaml
-# Configuration for the Fully Modular Crystal Transformer
-_target_: mattermake.models.modular_crystal_transformer_module.ModularCrystalTransformer
+_target_: mattermake.models.modular_hierarchical_crystal_transformer_module.ModularHierarchicalCrystalTransformer
 
 # --- Vocabularies & Indices ---
 element_vocab_size: 100

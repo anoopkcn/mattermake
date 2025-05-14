@@ -1,7 +1,7 @@
 # @package _global_
 
 # specify default task name that will be used to name logging directories
-task_name: "train_modular_hct" # MODIFIED
+task_name: "train_mhct" # MODIFIED
 
 # set experiment for logging
 # experiment: modular_hct_exp # MODIFIED - Point to the new experiment config by default
@@ -22,7 +22,7 @@ seed: 42
 defaults:
   - _self_
   - data: hct # Keep using the same data config
-  - model: modular_hct # MODIFIED - Use the new model config
+  - model: mhct # MODIFIED - Use the new model config
   - callbacks: default
   - logger: wandb # Or tensorboard, etc.
   - trainer: ddp_continuous # Or gpu, cpu, etc.
@@ -40,7 +40,7 @@ defaults:
 ckpt_path: null
 
 # tags to help you identify your experiments
-tags: ["modular-hct", "material-design"] # MODIFIED
+tags: ["mhct", "material-design"] # MODIFIED
 
 trainer:
   gradient_clip_val: 1.0

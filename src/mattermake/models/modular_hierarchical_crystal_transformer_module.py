@@ -5,15 +5,15 @@ from lightning.pytorch import LightningModule
 from torch.distributions import Normal
 from typing import Dict, Any, Optional, List
 
-from mattermake.models.modular_crystal_transformer_base import (
-    ModularCrystalTransformerBase,
+from mattermake.models.modular_hierarchical_crystal_transformer_base import (
+    ModularHierarchicalCrystalTransformerBase,
 )
 from mattermake.utils import RankedLogger
 
 log = RankedLogger(__name__, rank_zero_only=True)
 
 
-class ModularCrystalTransformer(LightningModule):
+class ModularHierarchicalCrystalTransformer(LightningModule):
     """
     PyTorch Lightning module for the Fully Modular Crystal Transformer.
     Handles training, validation, testing, loss calculation, and generation.
@@ -57,7 +57,7 @@ class ModularCrystalTransformer(LightningModule):
 
         # Initialize the base transformer model
         log.info(f"Creating modular base model with d_model={d_model}, nhead={nhead}")
-        self.model = ModularCrystalTransformerBase(
+        self.model = ModularHierarchicalCrystalTransformerBase(
             element_vocab_size=element_vocab_size,
             sg_vocab_size=sg_vocab_size,
             pad_idx=pad_idx,

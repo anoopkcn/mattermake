@@ -632,7 +632,7 @@ class ModularCrystalTransformerBase(nn.Module):
                     f"Warning: Encoder '{name}' not handled specifically in generate. Skipping."
                 )
 
-        # --- Step 2: Process Space Group (use provided or generate) ---
+        # --- Step 2: Process Space Group (use provided or generate) ---module
         # Space group is treated as a primary input at the same hierarchical level as composition
         # When provided directly, we use it; when not provided, we predict it from composition
         if spacegroup is None:

@@ -161,3 +161,4 @@ uv.lock
 zenv
 zenv.json
 notebooks
+Makefile

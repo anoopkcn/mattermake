@@ -3,7 +3,7 @@ import torch
 from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union, MutableMapping
 
 from mattermake.data.hct_dataset import HCTDataset
 from mattermake.utils import RankedLogger
@@ -170,7 +170,7 @@ class HCTDataModule(LightningModule):
         )
 
         # Set file paths for the single-file approach
-        self.data_dir = Path(self.hparams.processed_data_dir)
+        self.data_dir = Path(processed_data_dir)
         self.train_file = self.data_dir / "train.pt"
         self.val_file = self.data_dir / "val.pt"
         self.test_file = self.data_dir / "test.pt"
@@ -182,10 +182,10 @@ class HCTDataModule(LightningModule):
 
         # Store dataset args for instantiation in setup()
         self.dataset_kwargs = {
-            "add_atom_start_token": self.hparams.add_atom_start_end_tokens,
-            "add_atom_end_token": self.hparams.add_atom_start_end_tokens,
-            "start_token_idx": self.hparams.atom_start_token_idx,
-            "end_token_idx": self.hparams.atom_end_token_idx,
+            "add_atom_start_token": getattr(self.hparams, "add_atom_start_end_tokens", True),
+            "add_atom_end_token": getattr(self.hparams, "add_atom_start_end_tokens", True),
+            "start_token_idx": getattr(self.hparams, "atom_start_token_idx", -1),
+            "end_token_idx": getattr(self.hparams, "atom_end_token_idx", -2),
             # start/end coords use defaults in HCTDataset
         }
         # Padding index is now consistently 0
@@ -256,17 +256,21 @@ class HCTDataModule(LightningModule):
             log.error(msg)
             raise ValueError(msg)
 
+        batch_size = getattr(self.hparams, "batch_size", 32)
+        num_workers = getattr(self.hparams, "num_workers", 4)
+        pin_memory = getattr(self.hparams, "pin_memory", True)
+        
         log.debug(
-            f"Creating dataloader with batch_size={self.hparams.batch_size}, shuffle={shuffle}"
+            f"Creating dataloader with batch_size={batch_size}, shuffle={shuffle}"
         )
         return DataLoader(
             dataset,
-            batch_size=self.hparams.batch_size,
+            batch_size=batch_size,
             shuffle=shuffle,
-            num_workers=self.hparams.num_workers,
-            pin_memory=self.hparams.pin_memory,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
             collate_fn=hct_collate_fn,  # Use the updated collate function
-            persistent_workers=self.hparams.num_workers > 0,
+            persistent_workers=num_workers > 0,
         )
 
     def train_dataloader(self) -> DataLoader:
@@ -280,16 +284,19 @@ class HCTDataModule(LightningModule):
     def test_dataloader(self) -> DataLoader:
         log.debug("Creating test dataloader")
         # Use fewer workers for testing to reduce risk of worker crashes
-        original_workers = self.hparams.num_workers
+        original_workers = getattr(self.hparams, "num_workers", 4)
         test_workers = (
-            min(self.hparams.num_workers, 2) if self.hparams.num_workers > 0 else 0
+            min(original_workers, 2) if original_workers > 0 else 0
         )
-        self.hparams.num_workers = test_workers
+        
+        # Temporarily override num_workers for testing
+        current_num_workers = getattr(self.hparams, "num_workers", 4)
+        setattr(self.hparams, "num_workers", test_workers)
 
         dataloader = self._get_dataloader(self.test_dataset, shuffle=False)
 
         # Restore original worker count
-        self.hparams.num_workers = original_workers
+        setattr(self.hparams, "num_workers", current_num_workers)
         return dataloader
 
     def predict_dataloader(self) -> DataLoader:

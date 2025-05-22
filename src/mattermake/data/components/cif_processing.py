@@ -1,6 +1,6 @@
 from pymatgen.core import Structure
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 from mattermake.utils import RankedLogger
 from mattermake.data.components.wyckoff_utils import (
@@ -90,9 +90,10 @@ def get_lattice_matrix(structure: Structure) -> List[float]:
     return [element for row in matrix for element in row]
 
 
-def get_wyckoff_symbols_per_atom(structure: Structure) -> List[str]:
+def get_wyckoff_symbols_per_atom(structure: Structure) -> List[Optional[str]]:
     """
     Returns a list of Wyckoff symbols, one for each atom in the structure (order matches structure.sites).
+    Some positions may not have Wyckoff symbols assigned (None).
     """
     log.debug("Calculating Wyckoff symbols per atom")
     sga = SpacegroupAnalyzer(structure, symprec=0.01)
@@ -101,7 +102,7 @@ def get_wyckoff_symbols_per_atom(structure: Structure) -> List[str]:
     equivalent_sites = symm_struct.equivalent_sites
 
     # Build a mapping from site index to wyckoff symbol
-    site_to_wyckoff = [None] * len(structure.sites)
+    site_to_wyckoff: List[Optional[str]] = [None] * len(structure.sites)
     for wyckoff_symbol, site_group in zip(wyckoff_symbols, equivalent_sites):
         for site in site_group:
             idx = structure.sites.index(site)

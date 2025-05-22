@@ -1,4 +1,4 @@
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Optional
 import json
 import os
 import ast
@@ -135,7 +135,7 @@ def create_global_wyckoff_mapping() -> Dict[Tuple[int, str], int]:
 
 
 def get_global_wyckoff_index(
-    sg_num: int, wyckoff_letter: str, mapping: Dict = None
+    sg_num: int, wyckoff_letter: str, mapping: Optional[Dict[Tuple[int, str], int]] = None
 ) -> int:
     """
     Get the global index for a given space group number and Wyckoff letter.

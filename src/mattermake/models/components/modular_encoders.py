@@ -79,17 +79,17 @@ class CompositionEncoder(EncoderBase):
 
     def forward(
         self,
-        composition: torch.Tensor,
+        x: torch.Tensor,
         condition_context: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Args:
-            composition: (batch_size, element_vocab_size)
+            x: (batch_size, element_vocab_size) composition tensor
             condition_context: Optional conditioning tensor (ignored here)
         Returns:
             context: (batch_size, 1, d_model)
         """
-        comp_input = self.processor(composition).unsqueeze(1)
+        comp_input = self.processor(x).unsqueeze(1)
         # Conditioning could potentially be added here if needed in the future
         # comp_input = self._apply_conditioning(comp_input, condition_context)
         return self.encoder(comp_input)  # (batch, 1, d_model)
@@ -123,24 +123,24 @@ class SpaceGroupEncoder(EncoderBase):
             self.condition_projector = nn.Linear(d_model, sg_embed_dim)
 
     def forward(
-        self, spacegroup: torch.Tensor, condition_context: Optional[torch.Tensor] = None
+        self, x: torch.Tensor, condition_context: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         Args:
-            spacegroup: (batch_size, 1) with values 1-230
+            x: (batch_size, 1) spacegroup tensor with values 1-230
             condition_context: Optional conditioning tensor
         Returns:
             context: (batch_size, 1, d_model)
         """
         # Ensure input is long type and handle squeezing
-        if spacegroup.ndim > 1 and spacegroup.size(1) == 1:
-            spacegroup = spacegroup.squeeze(1)
+        if x.ndim > 1 and x.size(1) == 1:
+            x = x.squeeze(1)
 
-        device = spacegroup.device
-        batch_size = spacegroup.size(0)
+        device = x.device
+        batch_size = x.size(0)
 
         # Map 1-230 to 0-229 for one-hot indexing
-        sg_idx = spacegroup.long() - 1  # Map 1-230 -> 0-229
+        sg_idx = x.long() - 1  # Map 1-230 -> 0-229
 
         # Create one-hot encoding
         one_hot = torch.zeros(batch_size, self.sg_vocab_size, device=device)
@@ -253,12 +253,12 @@ class LatticeEncoder(EncoderBase):
 
     def forward(
         self,
-        lattice_input: torch.Tensor,
+        x: torch.Tensor,
         condition_context: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Args:
-            lattice_input: Either:
+            x: Lattice input in one of these formats:
                 - (batch_size, 3, 3) matrix
                 - (batch_size, 9) flattened matrix
                 - (batch_size, 6) lattice parameters [a, b, c, alpha, beta, gamma]
@@ -267,32 +267,32 @@ class LatticeEncoder(EncoderBase):
             context: (batch_size, 1, d_model)
         """
         # Ensure input is flattened (batch_size, 9)
-        if lattice_input.dim() == 3 and lattice_input.shape[1:] == (3, 3):
-            lattice_flat = lattice_input.reshape(
-                lattice_input.size(0), -1
+        if x.dim() == 3 and x.shape[1:] == (3, 3):
+            lattice_flat = x.reshape(
+                x.size(0), -1
             )  # Flatten to (batch_size, 9)
-        elif lattice_input.dim() == 2 and lattice_input.shape[1] == 9:
-            lattice_flat = lattice_input
-        elif lattice_input.dim() == 2 and lattice_input.shape[1] == 6:
+        elif x.dim() == 2 and x.shape[1] == 9:
+            lattice_flat = x
+        elif x.dim() == 2 and x.shape[1] == 6:
             # Handle old format: Convert 6 lattice parameters to 9 matrix elements
-            lattice_flat = self._convert_params_to_matrix(lattice_input)
+            lattice_flat = self._convert_params_to_matrix(x)
         else:
             raise ValueError(
-                f"Unexpected lattice_matrix shape: {lattice_input.shape}. Expected (B, 3, 3), (B, 9), or (B, 6)."
+                f"Unexpected lattice_matrix shape: {x.shape}. Expected (B, 3, 3), (B, 9), or (B, 6)."
             )
 
         # MLP Forward Pass - first layer
-        x = self.layer1(lattice_flat)
+        hidden = self.layer1(lattice_flat)
 
         # Apply conditioning *after* the first layer (inject into hidden state)
         # Note: _apply_conditioning projects and adds if context & projector exist
-        x = self._apply_conditioning(x, condition_context)
+        hidden = self._apply_conditioning(hidden, condition_context)
 
         # Continue with MLP layers
-        x = self.act1(x)
-        x = self.layer2(x)
-        x = self.act2(x)
-        encoded = self.layer3(x)
+        hidden = self.act1(hidden)
+        hidden = self.layer2(hidden)
+        hidden = self.act2(hidden)
+        encoded = self.layer3(hidden)
 
         # Add sequence dimension if needed
         if encoded.dim() == 2:
@@ -356,20 +356,20 @@ class AtomTypeEncoder(EncoderBase):
 
     def forward(
         self,
-        atom_types: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
+        x: torch.Tensor,
         condition_context: Optional[torch.Tensor] = None,
+        mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Args:
-            atom_types: (batch_size, seq_len) atom type indices
-            mask: (batch_size, seq_len) boolean mask (True where padded)
+            x: (batch_size, seq_len) atom type indices
             condition_context: Optional (batch_size, 1, d_model) fused global context
+            mask: (batch_size, seq_len) boolean mask (True where padded)
         Returns:
             context: (batch_size, seq_len, d_model)
         """
         # Map indices and get embeddings
-        mapped_indices = self._map_indices_for_embedding(atom_types)
+        mapped_indices = self._map_indices_for_embedding(x)
         mapped_indices = torch.clamp(mapped_indices, 0, self.effective_vocab_size - 1)
 
         # Get embeddings and project
@@ -381,7 +381,12 @@ class AtomTypeEncoder(EncoderBase):
         proj_embeds = self._apply_conditioning(proj_embeds, condition_context)
 
         # Apply transformer encoder if needed (with proper masking)
-        key_padding_mask = ~mask if mask is not None else None
+        # Handle mask dtype conversion to avoid bool/float mismatch
+        if mask is not None:
+            # Convert boolean mask to match tensor dtype
+            key_padding_mask = (~mask).to(dtype=torch.bool, device=proj_embeds.device)
+        else:
+            key_padding_mask = None
         output = self.encoder(proj_embeds, src_key_padding_mask=key_padding_mask)
 
         return output
@@ -419,27 +424,32 @@ class AtomCoordinateEncoder(EncoderBase):
 
     def forward(
         self,
-        coords: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
+        x: torch.Tensor,
         condition_context: Optional[torch.Tensor] = None,
+        mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Args:
-            coords: (batch_size, seq_len, 3) fractional coordinates
-            mask: (batch_size, seq_len) boolean mask (True where padded)
+            x: (batch_size, seq_len, 3) fractional coordinates
             condition_context: Optional (batch_size, 1, d_model) fused global context
+            mask: (batch_size, seq_len) boolean mask (True where padded)
         Returns:
             context: (batch_size, seq_len, d_model)
         """
         # Process coordinates
-        processed_coords = self.coords_mlp(coords)
+        processed_coords = self.coords_mlp(x)
 
         # Apply conditioning *before* the transformer encoder
         # _apply_conditioning handles projection, expansion, and addition
         processed_coords = self._apply_conditioning(processed_coords, condition_context)
 
         # Apply transformer encoder if needed (with proper masking)
-        key_padding_mask = ~mask if mask is not None else None
+        # Handle mask dtype conversion to avoid bool/float mismatch
+        if mask is not None:
+            # Convert boolean mask to match tensor dtype
+            key_padding_mask = (~mask).to(dtype=torch.bool, device=processed_coords.device)
+        else:
+            key_padding_mask = None
         output = self.encoder(processed_coords, src_key_padding_mask=key_padding_mask)
 
         return output

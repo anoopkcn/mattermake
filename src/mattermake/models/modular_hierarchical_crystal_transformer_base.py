@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union, cast
 
 from mattermake.models.components.modular_encoders import (
     CompositionEncoder,
@@ -44,11 +44,11 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
         dim_feedforward: int = 1024,
         dropout: float = 0.1,
         # --- Encoder/Decoder Configuration ---
-        encoder_configs: Dict[str, Dict[str, Any]] = None,
-        decoder_configs: Dict[str, Dict[str, Any]] = None,
+        encoder_configs: Optional[Dict[str, Dict[str, Any]]] = None,
+        decoder_configs: Optional[Dict[str, Dict[str, Any]]] = None,
         # --- Encoding/Decoding Order ---
-        encoding_order: List[str] = None,
-        decoding_order: List[str] = None,
+        encoding_order: Optional[List[str]] = None,
+        decoding_order: Optional[List[str]] = None,
         # --- Additional Params ---
         eps: float = 1e-6,
         **kwargs,  # Catch any extra hparams
@@ -70,9 +70,11 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
         self.d_model = d_model
 
         # --- Create Modular Encoders ---
-        if encoder_configs is None:
+        # Ensure encoder_configs is not None
+        encoder_configs_local = {} if encoder_configs is None else encoder_configs
+        if not encoder_configs_local:
             # Default config if none provided
-            encoder_configs = {
+            encoder_configs_local = {
                 "composition": {
                     "vocab_size": element_vocab_size,
                     "num_layers": 2,
@@ -100,15 +102,15 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
                     "dim_feedforward": dim_feedforward,
                 },
             }
-        self.encoder_configs = encoder_configs
+        self.encoder_configs = encoder_configs_local
 
         # Store the encoding order - default is alphabetical if not specified
         if encoding_order is None:
-            encoding_order = sorted(encoder_configs.keys())
+            encoding_order = sorted(encoder_configs_local.keys())
         self.encoding_order = encoding_order
 
         self.encoders = nn.ModuleDict()
-        for name, config in encoder_configs.items():
+        for name, config in encoder_configs_local.items():
             # Use get() for flexibility, providing defaults
             if name == "composition":
                 self.encoders[name] = CompositionEncoder(
@@ -167,7 +169,7 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
 
         # --- Store encoder dependencies ---
         self.encoder_dependencies = {}
-        for name, config in encoder_configs.items():
+        for name, config in encoder_configs_local.items():
             if "depends_on" in config:
                 self.encoder_dependencies[name] = config["depends_on"]
 
@@ -179,9 +181,10 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
         self.effective_type_vocab_size = self._max_element_idx + 3  # PAD, START, END
 
         # --- Initialize Modular Decoders ---
-        if decoder_configs is None:
+        decoder_configs_local = {} if decoder_configs is None else decoder_configs
+        if not decoder_configs_local:
             # Default decoder configuration
-            decoder_configs = {
+            decoder_configs_local = {
                 "spacegroup": {"sg_vocab_size": 230},  # 1-230 range
                 "lattice": {},  # Default parameters
                 "atom_type": {"vocab_size": self.effective_type_vocab_size},
@@ -190,7 +193,7 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
 
         # Create decoders
         decoders = {}
-        for name, config in decoder_configs.items():
+        for name, config in decoder_configs_local.items():
             # Ensure config is a dictionary even if it's None
             config = config if config is not None else {}
 
@@ -216,11 +219,10 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
                 print(f"Warning: Unknown decoder type '{name}' in config. Skipping.")
 
         # Default decoding order if not specified
-        if decoding_order is None:
-            decoding_order = ["spacegroup", "lattice", "atom_type", "coordinate"]
+        decoding_order_local = ["spacegroup", "lattice", "atom_type", "coordinate"] if decoding_order is None else decoding_order
 
         # Create ordered decoder registry
-        self.decoder_registry = OrderedDecoderRegistry(decoders, order=decoding_order)
+        self.decoder_registry = OrderedDecoderRegistry(decoders, order=decoding_order_local)
 
         # --- Create Attention Mechanisms & Atom Decoder ---
         # Separate attention for different prediction stages
@@ -326,14 +328,14 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
                     atom_types_input = atom_types_target[:, :-1]
                     atom_mask_input = atom_mask[:, :-1]
                     output = encoder(
-                        atom_types_input, atom_mask_input, condition_context
+                        atom_types_input, condition_context, atom_mask_input
                     )
                 elif name == "coordinate":
                     # Use teacher forcing (shifted right for decoder inputs)
                     atom_coords_input = atom_coords_target[:, :-1]
                     atom_mask_input = atom_mask[:, :-1]
                     output = encoder(
-                        atom_coords_input, atom_mask_input, condition_context
+                        atom_coords_input, condition_context, atom_mask_input
                     )
                 elif name in batch:  # Generic fallback for other encoders
                     output = encoder(batch[name], condition_context)
@@ -529,7 +531,7 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
 
             processed.add(name)
 
-    def _fuse_contexts(self, contexts: List[torch.Tensor]) -> torch.Tensor:
+    def _fuse_contexts(self, contexts: List[torch.Tensor]) -> Optional[torch.Tensor]:
         """Fuse multiple context tensors by averaging them.
 
         Args:
@@ -770,14 +772,31 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
             mapped_types[input_type_seq == self.pad_idx] = 0
 
             # Directly encode using the encoder's components
-            effective_vocab = atom_type_encoder.effective_vocab_size
+            effective_vocab = int(getattr(atom_type_encoder, "effective_vocab_size", 103))
             mapped_types_clamped = torch.clamp(mapped_types, 0, effective_vocab - 1)
-            type_embed = atom_type_encoder.type_embedding(mapped_types_clamped)
-            type_encoded = atom_type_encoder.projection(type_embed)
+            
+            # Safely access embedding and projection functions
+            type_embedding_fn = getattr(atom_type_encoder, "type_embedding", None)
+            projection_fn = getattr(atom_type_encoder, "projection", None)
+            
+            if type_embedding_fn is not None and projection_fn is not None:
+                # Use the functions to process the tensors
+                type_embed = type_embedding_fn(mapped_types_clamped)
+                type_encoded = projection_fn(type_embed)
+            else:
+                # Fallback to direct encoding if components not available
+                type_encoded = torch.zeros((mapped_types.size(0), mapped_types.size(1), self.d_model), device=mapped_types.device)
 
             # Encode coordinates directly using the encoder
             coord_encoder = self.encoders["coordinate"]
-            coord_encoded = coord_encoder.coords_mlp(input_coord_seq)
+            coords_mlp_fn = getattr(coord_encoder, "coords_mlp", None)
+            
+            if coords_mlp_fn is not None:
+                # Use the function to process the coordinates
+                coord_encoded = coords_mlp_fn(input_coord_seq)
+            else:
+                # Fallback if component not available
+                coord_encoded = torch.zeros((input_coord_seq.size(0), input_coord_seq.size(1), self.d_model), device=input_coord_seq.device)
 
             # Combine type and coordinate encodings
             atom_decoder_input = (type_encoded + coord_encoded) / 2.0

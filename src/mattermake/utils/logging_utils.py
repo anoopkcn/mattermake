@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Union, cast
 
 from lightning_utilities.core.rank_zero import rank_zero_only
 from omegaconf import OmegaConf
@@ -23,6 +23,10 @@ def log_hyperparameters(object_dict: Dict[str, Any]) -> None:
     hparams = {}
 
     cfg = OmegaConf.to_container(object_dict["cfg"])
+    if cfg is None or not isinstance(cfg, dict):
+        log.warning("Config is not a dictionary! Skipping hyperparameter logging...")
+        return
+
     model = object_dict["model"]
     trainer = object_dict["trainer"]
 
@@ -30,9 +34,11 @@ def log_hyperparameters(object_dict: Dict[str, Any]) -> None:
         log.warning("Logger not found! Skipping hyperparameter logging...")
         return
 
-    hparams["model"] = cfg["model"]
+    if "model" in cfg:
+        hparams["model"] = cfg["model"]
+    else:
+        log.warning("Model config not found in cfg")
 
-    # save number of model parameters
     hparams["model/params/total"] = sum(p.numel() for p in model.parameters())
     hparams["model/params/trainable"] = sum(
         p.numel() for p in model.parameters() if p.requires_grad
@@ -41,16 +47,14 @@ def log_hyperparameters(object_dict: Dict[str, Any]) -> None:
         p.numel() for p in model.parameters() if not p.requires_grad
     )
 
-    hparams["data"] = cfg["data"]
-    hparams["trainer"] = cfg["trainer"]
+    if "data" in cfg:
+        hparams["data"] = cfg["data"]
+    if "trainer" in cfg:
+        hparams["trainer"] = cfg["trainer"]
 
-    hparams["callbacks"] = cfg.get("callbacks")
-    hparams["extras"] = cfg.get("extras")
-
-    hparams["task_name"] = cfg.get("task_name")
-    hparams["tags"] = cfg.get("tags")
-    hparams["ckpt_path"] = cfg.get("ckpt_path")
-    hparams["seed"] = cfg.get("seed")
+    for key in ["callbacks", "extras", "task_name", "tags", "ckpt_path", "seed"]:
+        if key in cfg:
+            hparams[key] = cfg[key]
 
     # send hparams to all loggers
     for logger in trainer.loggers:

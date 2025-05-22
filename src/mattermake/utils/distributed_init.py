@@ -1,13 +1,16 @@
 import os
 import re
+from typing import Optional
 
 import torch
-from lightning.pytorch.plugins.environments import SLURMEnvironment
+from lightning.fabric.plugins.environments.slurm import SLURMEnvironment
 
 
-def get_first_node():
+def get_first_node() -> str:
     """Return the first node we can find in the Slurm node list."""
-    nodelist = os.getenv("SLURM_JOB_NODELIST")
+    nodelist = os.getenv("SLURM_JOB_NODELIST", "")
+    if not nodelist:
+        return "localhost"  # Default fallback
 
     bracket_re = re.compile(r"(.*?)\[(.*?)\]")
     dash_re = re.compile("(.*?)-")
@@ -28,7 +31,7 @@ def get_first_node():
 
         return node + first_index
 
-    comma_result = comma_re.match(nodelist)
+    comma_result = comma_re.match(nodelist) if nodelist else None
     if comma_result:
         return comma_result[1]
 
@@ -40,16 +43,16 @@ def init_distributed_mode(port: int = 12354):
     using Slurm.
     """
     # The number of total processes started by Slurm.
-    os.environ["WORLD_SIZE"] = os.getenv("SLURM_NTASKS")
+    os.environ["WORLD_SIZE"] = os.getenv("SLURM_NTASKS", "1")
     # Index of the current process.
-    os.environ["RANK"] = os.getenv("SLURM_PROCID")
+    os.environ["RANK"] = os.getenv("SLURM_PROCID", "0")
     # Index of the current process on this node only.
-    os.environ["LOCAL_RANK"] = os.getenv("SLURM_LOCALID")
+    os.environ["LOCAL_RANK"] = os.getenv("SLURM_LOCALID", "0")
 
     master_addr = get_first_node()
     systemname = os.getenv("SYSTEMNAME", "")
     # Need to append "i" on Jülich machines to connect across InfiniBand cells.
-    if systemname in ["juwels", "juwelsbooster", "jureca"]:
+    if systemname in ["juwels", "juwelsbooster", "jureca"] and master_addr:
         master_addr = master_addr + "i"
     os.environ["MASTER_ADDR"] = master_addr
 
@@ -86,8 +89,11 @@ def patch_lightning_slurm_master_addr():
     old_resolver = SLURMEnvironment.resolve_root_node_address
 
     def new_resolver(nodes):
-        # Append an i" for communication over InfiniBand.
-        return old_resolver(nodes) + "i"
+        # Append an "i" for communication over InfiniBand.
+        result = old_resolver(nodes)
+        if result:
+            return result + "i"
+        return result
 
-    SLURMEnvironment.__old_resolve_root_node_address = old_resolver
-    SLURMEnvironment.resolve_root_node_address = new_resolver
+    # Use monkey patching to replace the method
+    setattr(SLURMEnvironment, "resolve_root_node_address", new_resolver)

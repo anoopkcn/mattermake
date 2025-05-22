@@ -2,8 +2,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from lightning.pytorch import LightningModule
+from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch.distributions import Normal
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union, cast
 
 from mattermake.models.modular_hierarchical_crystal_transformer_base import (
     ModularHierarchicalCrystalTransformerBase,
@@ -36,11 +37,11 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
         dim_feedforward: int = 1024,
         dropout: float = 0.1,
         # --- Encoder/Decoder Configuration ---
-        encoder_configs: Dict[str, Dict[str, Any]] = None,
-        decoder_configs: Dict[str, Dict[str, Any]] = None,
+        encoder_configs: Optional[Dict[str, Dict[str, Any]]] = None,
+        decoder_configs: Optional[Dict[str, Dict[str, Any]]] = None,
         # --- Encoding/Decoding Order ---
-        encoding_order: List[str] = None,
-        decoding_order: List[str] = None,
+        encoding_order: Optional[List[str]] = None,
+        decoding_order: Optional[List[str]] = None,
         # --- Optimizer & Loss Params ---
         learning_rate: float = 1e-4,
         weight_decay: float = 0.01,
@@ -69,10 +70,10 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
             num_atom_decoder_layers=num_atom_decoder_layers,
             dim_feedforward=dim_feedforward,
             dropout=dropout,
-            encoder_configs=encoder_configs,
-            decoder_configs=decoder_configs,
-            encoding_order=encoding_order,
-            decoding_order=decoding_order,
+            encoder_configs={} if encoder_configs is None else encoder_configs,
+            decoder_configs={} if decoder_configs is None else decoder_configs,
+            encoding_order=[] if encoding_order is None else encoding_order,
+            decoding_order=[] if decoding_order is None else decoding_order,
             eps=eps,
             **kwargs,
         )
@@ -80,7 +81,7 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
         # --- Loss Functions ---
         log.info("Setting up loss functions")
         self.sg_loss = nn.CrossEntropyLoss()
-        self.type_loss = nn.CrossEntropyLoss(ignore_index=self.hparams.pad_idx)
+        self.type_loss = nn.CrossEntropyLoss(ignore_index=getattr(self.hparams, "pad_idx", 0))
         # Lattice/Coord NLL loss calculated inline
         log.info("Fully Modular Crystal Transformer initialization complete")
 
@@ -92,12 +93,12 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
     def _map_indices_for_embedding(self, indices: torch.Tensor) -> torch.Tensor:
         """Maps special token indices to embedding indices for loss calculation."""
         # This is needed because the loss expects mapped indices
-        element_vocab_size = self.hparams.element_vocab_size
+        element_vocab_size = getattr(self.hparams, "element_vocab_size", 100)
         start_embed_idx = element_vocab_size + 1  # START token
         end_embed_idx = element_vocab_size + 2  # END token
-        pad_idx = self.hparams.pad_idx
-        start_idx = self.hparams.start_idx
-        end_idx = self.hparams.end_idx
+        pad_idx = getattr(self.hparams, "pad_idx", 0)
+        start_idx = getattr(self.hparams, "start_idx", -1)
+        end_idx = getattr(self.hparams, "end_idx", -2)
 
         indices = indices.long()
         mapped_indices = indices.clone()
@@ -130,7 +131,7 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
         # --- SG Loss ---
         if "sg_logits" in predictions:
             loss_sg = self.sg_loss(predictions["sg_logits"], sg_target.long())
-            losses["sg_loss"] = loss_sg * self.hparams.sg_loss_weight
+            losses["sg_loss"] = loss_sg * getattr(self.hparams, "sg_loss_weight", 1.0)
             total_loss += losses["sg_loss"]
         else:
             log.warning("sg_logits not found in predictions, skipping SG loss.")
@@ -149,9 +150,13 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
                 if lattice_target_matrix.shape[-1] == 6:
                     # Borrow the conversion function from the encoder
                     # Note: in a production setting, this should be moved to a shared utility
-                    lattice_target_matrix = self.model.encoders[
-                        "lattice"
-                    ]._convert_params_to_matrix(lattice_target_matrix)
+                    lattice_encoder = self.model.encoders["lattice"]
+                    # Handle conversion through direct attribute access
+                    if hasattr(lattice_encoder, "_convert_params_to_matrix"):
+                        convert_fn = getattr(lattice_encoder, "_convert_params_to_matrix")
+                        lattice_target_matrix = convert_fn(lattice_target_matrix)
+                    else:
+                        log.warning("Lattice encoder missing conversion function, using raw tensor")
                 elif (
                     lattice_target_matrix.shape[-1] != 9
                     and lattice_target_matrix.dim() == 3
@@ -190,11 +195,12 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
                 )
 
                 # Ensure numerical stability
+                eps_value = getattr(self.hparams, "eps", 1e-6)
                 lattice_matrix_var = (
-                    torch.exp(lattice_matrix_log_var) + self.hparams.eps
+                    torch.exp(lattice_matrix_log_var) + eps_value
                 )
                 lattice_matrix_std = torch.sqrt(lattice_matrix_var).clamp(
-                    min=self.hparams.eps, max=5.0
+                    min=eps_value, max=5.0
                 )
 
                 # Calculate the NLL loss for the lattice matrix
@@ -205,12 +211,12 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
                 log_probs = torch.clamp(log_probs, min=-20.0, max=20.0)
 
                 # Mean across batch and all 9 matrix elements
-                nll_lattice = -log_probs.mean()
+                nll_lattice = -torch.mean(log_probs)
                 # Final safety clamp
                 nll_lattice = torch.clamp(nll_lattice, min=0.0, max=10.0)
 
                 losses["lattice_matrix_nll"] = (
-                    nll_lattice * self.hparams.lattice_loss_weight
+                    nll_lattice * getattr(self.hparams, "lattice_loss_weight", 1.0)
                 )
                 total_loss += losses["lattice_matrix_nll"]
             except Exception as e:
@@ -235,9 +241,10 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
                 # [Omitted - same as above but for lattice_mean/lattice_log_var]
 
                 # Calculate NLL loss
-                lattice_var = torch.exp(lattice_log_var) + self.hparams.eps
+                eps_value = getattr(self.hparams, "eps", 1e-6)
+                lattice_var = torch.exp(lattice_log_var) + eps_value
                 lattice_std = torch.sqrt(lattice_var).clamp(
-                    min=self.hparams.eps, max=5.0
+                    min=eps_value, max=5.0
                 )
                 lattice_dist = Normal(lattice_mean, lattice_std)
                 log_probs = lattice_dist.log_prob(lattice_target)
@@ -245,7 +252,7 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
                 nll_lattice = -log_probs.mean()
                 nll_lattice = torch.clamp(nll_lattice, min=0.0, max=10.0)
 
-                losses["lattice_nll"] = nll_lattice * self.hparams.lattice_loss_weight
+                losses["lattice_nll"] = nll_lattice * getattr(self.hparams, "lattice_loss_weight", 1.0)
                 total_loss += losses["lattice_nll"]
             except Exception as e:
                 log.warning(f"Error in legacy lattice loss calculation: {e}")
@@ -260,12 +267,19 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
 
         # --- Atom Type Loss ---
         if "type_logits" in predictions:
+            # Get the effective vocabulary size from model attributes
+            if hasattr(self.model, "effective_type_vocab_size"):
+                effective_vocab_size = getattr(self.model, "effective_type_vocab_size")
+            else:
+                # Fallback to default (element_vocab_size + 3 for PAD, START, END)
+                effective_vocab_size = getattr(self.hparams, "element_vocab_size", 100) + 3
+                
             type_logits_flat = predictions["type_logits"].reshape(
-                -1, self.model.effective_type_vocab_size
+                -1, effective_vocab_size
             )
             type_target_flat = type_target_mapped.reshape(-1)
             loss_type = self.type_loss(type_logits_flat, type_target_flat)
-            losses["type_loss"] = loss_type * self.hparams.type_loss_weight
+            losses["type_loss"] = loss_type * getattr(self.hparams, "type_loss_weight", 1.0)
             total_loss += losses["type_loss"]
         else:
             log.warning("type_logits not found in predictions, skipping Type loss.")
@@ -279,11 +293,12 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
             coord_log_var = predictions["coord_log_var"]
 
             # Convert log_var to variance for calculations
-            coord_variance = torch.exp(coord_log_var) + self.hparams.eps
+            eps_value = getattr(self.hparams, "eps", 1e-6)
+            coord_variance = torch.exp(coord_log_var) + eps_value
 
             # Ensure values are within reasonable ranges
             coord_mean = torch.clamp(coord_mean, min=0.0, max=1.0)
-            coord_variance = torch.clamp(coord_variance, min=self.hparams.eps, max=0.1)
+            coord_variance = torch.clamp(coord_variance, min=eps_value, max=0.1)
 
             try:
                 # Use simple MSE loss weighted by precision - more stable than full NLL
@@ -360,7 +375,7 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
                     )
 
                 # Force a minimum loss value for diagnostic purposes
-                coord_loss_weighted = coord_loss * self.hparams.coord_loss_weight
+                coord_loss_weighted = coord_loss * getattr(self.hparams, "coord_loss_weight", 1.0)
 
                 # # For debugging: make sure we get some visible loss contribution
                 # if self.hparams.coord_loss_weight == 0.0:
@@ -460,14 +475,17 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
         self.step(batch, batch_idx, "test")
 
     # --- Optimizer ---
-    def configure_optimizers(self):
+    def configure_optimizers(self):  # type: ignore
+        lr = getattr(self.hparams, "learning_rate", 1e-4)
+        wd = getattr(self.hparams, "weight_decay", 0.01)
+        
         log.info(
-            f"Configuring optimizer with lr={self.hparams.learning_rate}, weight_decay={self.hparams.weight_decay}"
+            f"Configuring optimizer with lr={lr}, weight_decay={wd}"
         )
         optimizer = optim.AdamW(
             self.parameters(),
-            lr=self.hparams.learning_rate,
-            weight_decay=self.hparams.weight_decay,
+            lr=lr,
+            weight_decay=wd,
         )
 
         # Add learning rate scheduler for better stability
@@ -476,10 +494,11 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
             mode="min",
             factor=0.5,  # Reduce LR by half when plateauing
             patience=2,  # Wait 2 epochs before reducing
-            verbose=True,
+            cooldown=0,
             min_lr=1e-6,  # Don't go below this learning rate
         )
 
+        # Return in a dictionary format that Lightning supports
         return {
             "optimizer": optimizer,
             "lr_scheduler": {

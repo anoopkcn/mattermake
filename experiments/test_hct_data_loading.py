@@ -27,15 +27,16 @@ def test_dataset(data_dir: str, num_samples: int = 5):
     train_files = sorted(list(train_dir.glob("*.pt")))
     print(f"Found {len(train_files)} training files")
 
-    # 1. Test without preloading data
-    print("Testing HCTDataset without preloading")
-    dataset = HCTDataset(train_files, preload_data=False)
+    # 1. Test dataset with first file
+    print("Testing HCTDataset with first file")
+    dataset = HCTDataset(train_files[0])
     print(f"Dataset contains {len(dataset)} structures")
 
-    # 2. Test with preloading data
-    print("Testing HCTDataset with preloading")
-    preload_dataset = HCTDataset(train_files, preload_data=True)
-    print(f"Preloaded dataset contains {len(preload_dataset)} structures")
+    # 2. Test with another file if available
+    print("Testing HCTDataset with second file")
+    second_file = train_files[1] if len(train_files) > 1 else train_files[0]
+    preload_dataset = HCTDataset(second_file)
+    print(f"Second dataset contains {len(preload_dataset)} structures")
 
     # 3. Verify both methods give the same result
     if len(dataset) != len(preload_dataset):
@@ -56,7 +57,6 @@ def test_dataset(data_dir: str, num_samples: int = 5):
         print(f"  - Material ID: {sample.get('material_id', 'Unknown')}")
         print(f"  - Space group: {sample['spacegroup'].item()}")
         print(f"  - Number of atoms: {len(sample['atom_types'])}")
-        print(f"  - Source file: {sample['filepath']}")
 
         # Verify both methods give the same result
         atoms_match = torch.all(

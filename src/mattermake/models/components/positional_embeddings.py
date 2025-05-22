@@ -18,13 +18,14 @@ class PositionalEncoding(nn.Module):
         pe[:, 0, 0::2] = torch.sin(position * div_term)
         pe[:, 0, 1::2] = torch.cos(position * div_term)
         self.register_buffer("pe", pe)
+        self.pe: torch.Tensor  # Type annotation
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
             x: Tensor, shape [seq_len, batch_size, embedding_dim]
         """
-        x = x + self.pe[: x.size(0)]
+        x = x + self.pe[:x.size(0)]
         return self.dropout(x)
 
 
@@ -69,7 +70,9 @@ class RotaryPositionalEmbedding(nn.Module):
 
         # Register cos/sin as buffers so they're moved to the right device automatically
         self.register_buffer("freqs_cos", freqs_cos)
+        self.freqs_cos: torch.Tensor  # Type annotation
         self.register_buffer("freqs_sin", freqs_sin)
+        self.freqs_sin: torch.Tensor  # Type annotation
 
     def _apply_rotary_pos_emb(self, x: torch.Tensor, offset: int = 0) -> torch.Tensor:
         """Apply the rotary positional embeddings to the input tensor"""
@@ -82,10 +85,10 @@ class RotaryPositionalEmbedding(nn.Module):
             )
 
         # Get the right part of the precomputed frequency tensor
-        cos = self.freqs_cos[offset : offset + seq_len].unsqueeze(
+        cos = self.freqs_cos[offset:offset + seq_len].unsqueeze(
             0
         )  # [1, seq, d_model/2]
-        sin = self.freqs_sin[offset : offset + seq_len].unsqueeze(
+        sin = self.freqs_sin[offset:offset + seq_len].unsqueeze(
             0
         )  # [1, seq, d_model/2]
 

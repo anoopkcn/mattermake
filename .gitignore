@@ -162,3 +162,5 @@ zenv/*
 zenv.json
 notebooks
 Makefile
+.zed
+DEVLOG.md

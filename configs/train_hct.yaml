@@ -1,0 +1,44 @@
+# @package _global_
+
+# specify default task name that will be used to name logging directories
+task_name: "train_hct"
+
+# set experiment for logging
+experiment: hct
+
+# set default precision for all operations
+precision: 32
+
+# training mode
+train: true
+
+# evaluation mode
+test: true
+
+# randomly seed all operations
+seed: 42
+
+# default config choices
+defaults:
+  - _self_
+  - data: hct
+  - model: hct
+  - callbacks: default
+  - logger: wandb
+  - trainer: ddp_continuous
+  - paths: default
+  - extras: default
+  - hydra: default
+  # experiment config allows for further customization
+  - experiment: null
+  # debugging config (enable with `python train.py debug=default)`
+  - debug: null
+  # optional local config for machine/user specific settings
+  # - optional local: default
+
+# passing checkpoint path is optional
+ckpt_path: null
+
+# tags to help you identify your experiments
+# you can use it to filter runs on Tensorboard or W&B
+tags: ["hierarchical-crystal-transformer", "material-design"]

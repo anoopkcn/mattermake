@@ -3,15 +3,9 @@ from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from typing import List, Tuple, Optional
 
 from mattermake.utils import RankedLogger
-from mattermake.data.components.wyckoff_utils import (
-    get_global_wyckoff_index,
-    load_or_create_wyckoff_mapping,
-)
+from mattermake.data.components.wyckoff_interface import wyckoff_interface
 
 log = RankedLogger(__name__, rank_zero_only=True)
-
-# Load the global Wyckoff mapping at module level
-GLOBAL_WYCKOFF_MAPPING = load_or_create_wyckoff_mapping()
 
 
 def parse_cif_file(cif_file: str) -> Structure:
@@ -115,9 +109,9 @@ def get_asymmetric_unit_atoms(
 ) -> List[Tuple[int, int, List[float]]]:
     """
     Returns a list of (atomic_number, wyckoff_index, free_coords) for each atom in the asymmetric unit.
-    Wyckoff indices are consistent across all space groups using a global mapping.
+    Wyckoff indices are consistent across all space groups using the wyckoff package interface.
     """
-    log.debug("Extracting asymmetric unit atoms using global Wyckoff mapping")
+    log.debug("Extracting asymmetric unit atoms using wyckoff interface")
 
     sga = SpacegroupAnalyzer(structure, symprec=0.01)
     symm_struct = sga.get_symmetrized_structure()
@@ -133,10 +127,8 @@ def get_asymmetric_unit_atoms(
         # Only use the letter part (strip multiplicity if present)
         wyckoff_letter = wyckoff_symbol[-1]
 
-        # Use the global mapping to get a consistent Wyckoff index
-        wyckoff_index = get_global_wyckoff_index(
-            sg_num, wyckoff_letter, GLOBAL_WYCKOFF_MAPPING
-        )
+        # Use the wyckoff interface to get a consistent Wyckoff index
+        wyckoff_index = wyckoff_interface.wyckoff_to_index(sg_num, wyckoff_letter)
 
         coords = [float(c) for c in atom.frac_coords]
         atom_data.append((atomic_number, wyckoff_index, coords))

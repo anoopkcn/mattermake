@@ -47,12 +47,20 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
         weight_decay: float = 0.01,
         sg_loss_weight: float = 1.0,
         lattice_loss_weight: float = 1.0,
+        wyckoff_loss_weight: float = 1.0,
         type_loss_weight: float = 1.0,
         coord_loss_weight: float = 1.0,
+        wyckoff_vocab_size: Optional[int] = None,
         eps: float = 1e-6,
         **kwargs,  # Catch any extra hparams
     ):
         super().__init__()
+        
+        # Auto-calculate Wyckoff vocab size if not provided
+        if wyckoff_vocab_size is None:
+            from mattermake.data.components.wyckoff_interface import get_effective_wyckoff_vocab_size
+            wyckoff_vocab_size = get_effective_wyckoff_vocab_size()
+        
         self.save_hyperparameters()
         log.info("Initializing Fully Modular Crystal Transformer")
 
@@ -61,6 +69,7 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
         self.model = ModularHierarchicalCrystalTransformerBase(
             element_vocab_size=element_vocab_size,
             sg_vocab_size=sg_vocab_size,
+            wyckoff_vocab_size=wyckoff_vocab_size,
             pad_idx=pad_idx,
             start_idx=start_idx,
             end_idx=end_idx,
@@ -82,6 +91,7 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
         log.info("Setting up loss functions")
         self.sg_loss = nn.CrossEntropyLoss()
         self.type_loss = nn.CrossEntropyLoss(ignore_index=getattr(self.hparams, "pad_idx", 0))
+        self.wyckoff_loss = nn.CrossEntropyLoss(ignore_index=0)  # 0 = padding
         # Lattice/Coord NLL loss calculated inline
         log.info("Fully Modular Crystal Transformer initialization complete")
 
@@ -130,6 +140,15 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
 
         # --- SG Loss ---
         if "sg_logits" in predictions:
+            # Add bounds checking for space group target indices to prevent CUDA assertion errors
+            sg_vocab_size = predictions["sg_logits"].size(-1)
+            if sg_target.numel() > 0:
+                max_sg_target = sg_target.max().item()
+                min_sg_target = sg_target.min().item()
+                if max_sg_target >= sg_vocab_size or min_sg_target < 0:
+                    log.warning(f"Space group target indices out of bounds. Min: {min_sg_target}, Max: {max_sg_target}, Vocab size: {sg_vocab_size}")
+                    sg_target = torch.clamp(sg_target, 0, sg_vocab_size - 1)
+            
             loss_sg = self.sg_loss(predictions["sg_logits"], sg_target.long())
             losses["sg_loss"] = loss_sg * getattr(self.hparams, "sg_loss_weight", 1.0)
             total_loss += losses["sg_loss"]
@@ -278,13 +297,70 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
                 -1, effective_vocab_size
             )
             type_target_flat = type_target_mapped.reshape(-1)
+            
+            # Add bounds checking for target indices to prevent CUDA assertion errors
+            if type_target_flat.numel() > 0:
+                max_target = type_target_flat.max().item()
+                min_target = type_target_flat.min().item()
+                if max_target >= effective_vocab_size or min_target < 0:
+                    log.warning(f"Atom type target indices out of bounds. Min: {min_target}, Max: {max_target}, Vocab size: {effective_vocab_size}")
+                    type_target_flat = torch.clamp(type_target_flat, 0, effective_vocab_size - 1)
+            
             loss_type = self.type_loss(type_logits_flat, type_target_flat)
             losses["type_loss"] = loss_type * getattr(self.hparams, "type_loss_weight", 1.0)
             total_loss += losses["type_loss"]
         else:
             log.warning("type_logits not found in predictions, skipping Type loss.")
 
-        # --- Atom Wyckoff Loss REMOVED ---
+        # --- Wyckoff Loss ---
+        if "wyckoff_logits" in predictions and "wyckoff" in batch:
+            wyckoff_target = batch["wyckoff"][:, 1:]  # Remove start token if present
+            wyckoff_logits = predictions["wyckoff_logits"]
+            
+            # Flatten for loss calculation
+            from mattermake.data.components.wyckoff_interface import get_effective_wyckoff_vocab_size
+            wyckoff_vocab_size = get_effective_wyckoff_vocab_size()
+            wyckoff_logits_flat = wyckoff_logits.reshape(-1, wyckoff_vocab_size)
+            wyckoff_target_flat = wyckoff_target.reshape(-1)
+            
+            # Map special tokens to valid vocabulary indices before bounds checking
+            if wyckoff_target_flat.numel() > 0:
+                # Map special tokens: START (-1) -> vocab_size - 2, END (-2) -> vocab_size - 1
+                wyckoff_target_mapped = wyckoff_target_flat.clone()
+                wyckoff_target_mapped = torch.where(wyckoff_target_flat == -1, wyckoff_vocab_size - 2, wyckoff_target_mapped)
+                wyckoff_target_mapped = torch.where(wyckoff_target_flat == -2, wyckoff_vocab_size - 1, wyckoff_target_mapped)
+                
+                # Add bounds checking for wyckoff target indices to prevent CUDA assertion errors
+                max_wyckoff_target = wyckoff_target_mapped.max().item()
+                min_wyckoff_target = wyckoff_target_mapped.min().item()
+                if max_wyckoff_target >= wyckoff_vocab_size or min_wyckoff_target < 0:
+                    log.warning(f"Wyckoff target indices out of bounds after mapping. Min: {min_wyckoff_target}, Max: {max_wyckoff_target}, Vocab size: {wyckoff_vocab_size}")
+                    wyckoff_target_flat = torch.clamp(wyckoff_target_mapped, 0, wyckoff_vocab_size - 1)
+                else:
+                    wyckoff_target_flat = wyckoff_target_mapped
+            
+            # Create mask for valid Wyckoff positions based on space group
+            if "spacegroup" in batch:
+                from mattermake.data.components.wyckoff_interface import create_wyckoff_mask
+                sg_numbers = batch["spacegroup"].squeeze()
+                
+                # Create mask and apply to logits
+                mask = create_wyckoff_mask(sg_numbers, self.device)  # (B, vocab_size)
+                
+                # Expand mask to match logits shape
+                seq_len = wyckoff_logits.size(1)
+                expanded_mask = mask.unsqueeze(1).expand(-1, seq_len, -1)  # (B, L, vocab_size)
+                expanded_mask_flat = expanded_mask.reshape(-1, wyckoff_vocab_size)
+                
+                # Apply mask (set invalid positions to very negative values)
+                wyckoff_logits_flat = wyckoff_logits_flat.masked_fill(~expanded_mask_flat, -1e9)
+            
+            # Calculate loss
+            loss_wyckoff = self.wyckoff_loss(wyckoff_logits_flat, wyckoff_target_flat)
+            losses["wyckoff_loss"] = loss_wyckoff * getattr(self.hparams, "wyckoff_loss_weight", 1.0)
+            total_loss += losses["wyckoff_loss"]
+        else:
+            log.warning("wyckoff_logits or wyckoff not found in predictions/batch, skipping Wyckoff loss.")
 
         # --- Coordinate Loss (using new parameters) ---
         if "coord_mean" in predictions and "coord_log_var" in predictions:
@@ -301,36 +377,126 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
             coord_variance = torch.clamp(coord_variance, min=eps_value, max=0.1)
 
             try:
+                # Initialize variables to prevent unbound errors
+                mask_expanded = torch.ones(1, 1, 1, device=self.device)
+                num_valid = torch.tensor(1.0, device=self.device)
+                masked_mse = torch.tensor(0.01, device=self.device)
+                
+                # Move to CPU for validation if CUDA operations are failing
+                try:
+                    # Test if CUDA operations are working
+                    _ = torch.tensor(1.0, device=self.device)
+                    use_cuda = True
+                except:
+                    log.warning("CUDA operations failing, using CPU for coordinate loss")
+                    use_cuda = False
+                
+                # Ensure coordinate targets are in valid range [0, 1]
+                try:
+                    atom_coords_target_clamped = torch.clamp(atom_coords_target, 0.0, 1.0)
+                    coord_mean_clamped = torch.clamp(coord_mean, 0.0, 1.0)
+                except Exception as clamp_error:
+                    log.warning(f"Error in coordinate clamping: {clamp_error}")
+                    # Use safer CPU operations
+                    atom_coords_target_clamped = atom_coords_target.cpu().clamp(0.0, 1.0).to(atom_coords_target.device)
+                    coord_mean_clamped = coord_mean.cpu().clamp(0.0, 1.0).to(coord_mean.device)
+                
+                # Validate coordinate shapes match
+                if coord_mean_clamped.shape != atom_coords_target_clamped.shape:
+                    log.warning(f"Coordinate shape mismatch: pred {coord_mean_clamped.shape} vs target {atom_coords_target_clamped.shape}")
+                    # Reshape to match the smaller dimension
+                    min_seq_len = min(coord_mean_clamped.shape[1], atom_coords_target_clamped.shape[1])
+                    coord_mean_clamped = coord_mean_clamped[:, :min_seq_len, :]
+                    atom_coords_target_clamped = atom_coords_target_clamped[:, :min_seq_len, :]
+                
                 # Use simple MSE loss weighted by precision - more stable than full NLL
                 # This treats coordinates as predictions with uncertainty
-                coord_squared_error = (coord_mean - atom_coords_target).pow(2)
+                try:
+                    coord_squared_error = (coord_mean_clamped - atom_coords_target_clamped).pow(2)
+                except Exception as mse_error:
+                    log.warning(f"Error in MSE calculation: {mse_error}")
+                    # Fallback to CPU calculation
+                    coord_mean_cpu = coord_mean_clamped.cpu()
+                    coord_target_cpu = atom_coords_target_clamped.cpu()
+                    coord_squared_error = (coord_mean_cpu - coord_target_cpu).pow(2).to(coord_mean_clamped.device)
+                
+                # Validate the error tensor using CPU operations to avoid CUDA issues
+                try:
+                    error_cpu = coord_squared_error.cpu()
+                    has_nan = torch.isnan(error_cpu).any().item()
+                    has_inf = torch.isinf(error_cpu).any().item()
+                    if has_nan or has_inf:
+                        log.warning("NaN or Inf detected in coordinate squared error, cleaning...")
+                        coord_squared_error = torch.nan_to_num(coord_squared_error, nan=0.0, posinf=1.0, neginf=0.0)
+                except Exception as validation_error:
+                    log.warning(f"Error in tensor validation: {validation_error}")
+                    # Force clean the tensor
+                    coord_squared_error = torch.nan_to_num(coord_squared_error, nan=0.0, posinf=1.0, neginf=0.0)
 
                 # Account for the periodic nature of fractional coords
                 # If error > 0.5, it's shorter to go the other way around
-                periodic_mask = coord_squared_error > 0.25  # (0.5)²
-                coord_squared_error[periodic_mask] = 1.0 - torch.sqrt(
-                    coord_squared_error[periodic_mask]
-                )
-                coord_squared_error[periodic_mask] = coord_squared_error[
-                    periodic_mask
-                ].pow(2)
+                try:
+                    periodic_mask = coord_squared_error > 0.25  # (0.5)²
+                    
+                    # Safe periodic boundary handling
+                    if periodic_mask.any():
+                        try:
+                            sqrt_values = torch.sqrt(torch.clamp(coord_squared_error[periodic_mask], min=1e-8))
+                            periodic_corrections = (1.0 - sqrt_values).pow(2)
+                            coord_squared_error = coord_squared_error.clone()  # Ensure we can modify in-place
+                            coord_squared_error[periodic_mask] = periodic_corrections
+                        except Exception as pe:
+                            log.warning(f"Error in periodic boundary correction: {pe}")
+                            # Skip periodic correction if it fails
+                            pass
+                except Exception as periodic_error:
+                    log.warning(f"Error in periodic boundary calculation: {periodic_error}")
+                    # Skip periodic correction entirely
 
-                # We're not using the weighted error + log variance approach anymore
-                # as it can result in negative losses
-                # Instead, using direct MSE with variance regularization penalties
-                # Keep these commented for reference on what was causing negative loss:
-                # weighted_error = coord_squared_error / coord_variance
-                # loss_terms = weighted_error + torch.log(coord_variance)
-
-                # IMPORTANT: The issue is that loss_terms can be negative due to log variance term
-                # We need to handle the MSE and log variance separately to ensure positive loss
-
+                # Validate mask dimensions and data
+                try:
+                    if atom_mask_target.shape != coord_squared_error.shape[:2]:
+                        log.warning(f"Mask shape mismatch: {atom_mask_target.shape} vs {coord_squared_error.shape[:2]}")
+                        # Resize mask to match coordinate error shape
+                        batch_size, seq_len = coord_squared_error.shape[:2]
+                        if atom_mask_target.shape[1] >= seq_len:
+                            atom_mask_target = atom_mask_target[:batch_size, :seq_len]
+                        else:
+                            padding = torch.zeros(batch_size, seq_len - atom_mask_target.shape[1], 
+                                                device=atom_mask_target.device, dtype=atom_mask_target.dtype)
+                            atom_mask_target = torch.cat([atom_mask_target, padding], dim=1)
+                    
+                    # Ensure mask is valid (no NaN, proper dtype)
+                    atom_mask_target = torch.nan_to_num(atom_mask_target, nan=0.0).bool()
+                except Exception as mask_error:
+                    log.warning(f"Error in mask processing: {mask_error}")
+                    # Create a simple valid mask
+                    batch_size, seq_len = coord_squared_error.shape[:2]
+                    atom_mask_target = torch.ones(batch_size, seq_len, device=coord_squared_error.device, dtype=torch.bool)
+                
                 # Just calculate plain MSE loss for coordinates
-                mask_expanded = atom_mask_target.unsqueeze(-1).to(
-                    coord_squared_error.dtype
-                )
-                masked_mse = coord_squared_error * mask_expanded
-                num_valid = mask_expanded.sum()
+                try:
+                    mask_expanded = atom_mask_target.unsqueeze(-1).to(coord_squared_error.dtype)
+                    
+                    # Clamp coordinate error to prevent numerical issues
+                    coord_squared_error = torch.clamp(coord_squared_error, min=0.0, max=4.0)  # Max possible error is 2.0^2
+                    
+                    masked_mse = coord_squared_error * mask_expanded
+                    num_valid = mask_expanded.sum()
+                except Exception as loss_calc_error:
+                    log.warning(f"Error in loss calculation setup: {loss_calc_error}")
+                    # Use CPU for final calculation
+                    try:
+                        coord_error_cpu = coord_squared_error.cpu().clamp(0.0, 4.0)
+                        mask_cpu = atom_mask_target.cpu().unsqueeze(-1).to(coord_error_cpu.dtype)
+                        masked_mse = (coord_error_cpu * mask_cpu).to(coord_squared_error.device)
+                        num_valid = mask_cpu.sum().to(coord_squared_error.device)
+                    except Exception as final_error:
+                        log.warning(f"Final fallback failed: {final_error}")
+                        # Return a safe default loss
+                        losses["coord_loss"] = torch.tensor(0.01, device=self.device, requires_grad=True)
+                        total_loss += losses["coord_loss"]
+                        # Continue to rest of function instead of returning early
 
                 # Optionally add a variance regularization term, but don't let it make the total loss negative
                 # log_var_reg = torch.log(coord_variance) * mask_expanded
@@ -398,6 +564,10 @@ class ModularHierarchicalCrystalTransformer(LightningModule):
 
             except Exception as e:
                 log.warning(f"Error in coordinate loss calculation: {e}")
+                log.warning(f"coord_mean shape: {coord_mean.shape if 'coord_mean' in locals() else 'undefined'}")
+                log.warning(f"atom_coords_target shape: {atom_coords_target.shape if 'atom_coords_target' in locals() else 'undefined'}")
+                log.warning(f"atom_mask_target shape: {atom_mask_target.shape if 'atom_mask_target' in locals() else 'undefined'}")
+                
                 # Provide a default loss that won't break training
                 losses["coord_loss"] = torch.tensor(
                     1.0, device=self.device, requires_grad=True

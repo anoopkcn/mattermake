@@ -1,0 +1,58 @@
+# New Wyckoff Dataset Configuration
+_target_: mattermake.data.hct_datamodule.HCTDataModule
+
+# Data paths
+processed_data_dir: ${paths.data_dir}/new_wyckoff_dataset
+
+# DataLoader parameters
+batch_size: 32
+num_workers: 4
+pin_memory: true
+
+# Directory structure
+train_subdir: "train"
+val_subdir: "val"
+test_subdir: "test"
+file_extension: ".pt"
+
+# Token configuration
+add_atom_start_end_tokens: true
+atom_start_token_idx: -1  # Default START = -1
+atom_end_token_idx: -2    # Default END = -2
+
+# Vocabulary sizes
+element_vocab_size: 100    # Atomic numbers + special tokens
+spacegroup_vocab_size: 231  # 1-230 + padding token
+wyckoff_vocab_size: null  # Auto-calculated from updated wyckoff interface
+
+# Wyckoff processing configuration
+process_wyckoff: true      # Enable Wyckoff processing
+wyckoff_pad_idx: 0        # Padding index for Wyckoff positions
+validate_wyckoff: true    # Validate Wyckoff positions during loading
+use_global_wyckoff_mapping: true  # Use global Wyckoff mapping
+
+# Dataset creation parameters
+max_structures_per_split: null  # No limit by default
+shuffle_data: true             # Shuffle data during splitting
+random_seed: 42               # For reproducible splits
+
+# Data validation
+validate_structures: true     # Validate structures during loading
+skip_invalid_structures: true # Skip invalid structures instead of failing
+min_atoms_per_structure: 1   # Minimum number of atoms required
+max_atoms_per_structure: null # No maximum by default
+
+# Lattice parameters
+lattice_param_normalization: false  # Whether to normalize lattice parameters
+coordinate_system: "fractional"     # Use fractional coordinates
+
+# Materials filtering
+allowed_elements: null      # List of allowed elements (null = all)
+forbidden_elements: null   # List of forbidden elements
+min_spacegroup: 1          # Minimum space group number
+max_spacegroup: 230        # Maximum space group number
+
+# Advanced options
+cache_structures: true     # Cache processed structures in memory
+precompute_masks: false   # Precompute Wyckoff masks
+use_asymmetric_unit: true # Use asymmetric unit atoms only

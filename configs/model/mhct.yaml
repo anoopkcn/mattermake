@@ -1,49 +1,35 @@
 _target_: mattermake.models.modular_hierarchical_crystal_transformer_module.ModularHierarchicalCrystalTransformer
-
-# --- Vocabularies & Indices ---
 element_vocab_size: 100
 sg_vocab_size: 231
+wyckoff_vocab_size: null  # Auto-calculated from wyckoff interface
 pad_idx: 0
 start_idx: -1
 end_idx: -2
-
-# --- Model Dimensions ---
 d_model: 256
 type_embed_dim: 64
-
-# --- Transformer Params ---
+wyckoff_embed_dim: 64
 nhead: 8
 num_atom_decoder_layers: 4
 dim_feedforward: 1024
 dropout: 0.1
-
-# --- Encoder Configuration ---
-# Define all modular encoders and their specific parameters
 encoder_configs:
-  # Primary Input Encoders (Independent, at the same hierarchical level)
   composition:
-    # Encodes element composition vector
-    # Uses element_vocab_size from above
-    # Uses d_model, nhead, dim_feedforward, dropout from above
-    num_layers: 2 # Specific to this encoder
+    num_layers: 2
   spacegroup:
-    # Encodes space group number (1-230)
-    # Both composition and spacegroup are at the same hierarchical level
-    # and can be provided as independent inputs
-    # Uses sg_vocab_size from above
-    # Uses d_model from above
-    embed_dim: 64 # Specific embedding dim for spacegroup before projection
-  
-  # Secondary/Dependent Encoders
+    embed_dim: 64
   lattice:
-    # Lattice parameter encoder
-    latent_dim: 64 # Dimension of intermediate lattice representation
-    equivariant: false # Use non-equivariant version for now
-    has_conditioning: true # Enable conditioning
-    # Lattice depends on both composition and spacegroup
-    depends_on: ["composition", "spacegroup"] # Both primary inputs influence lattice
+    latent_dim: 64
+    equivariant: false
+    has_conditioning: true
+    depends_on:
+    - composition
+    - spacegroup
+  wyckoff:
+    embed_dim: ${model.wyckoff_embed_dim}
+    has_conditioning: true
+    depends_on:
+    - spacegroup
   atom_type:
-    # New dedicated atom type encoder
     element_vocab_size: ${model.element_vocab_size}
     type_embed_dim: ${model.type_embed_dim}
     num_layers: 2
@@ -53,43 +39,52 @@ encoder_configs:
     pad_idx: ${model.pad_idx}
     start_idx: ${model.start_idx}
     end_idx: ${model.end_idx}
-    has_conditioning: true # Enable conditioning
-    # Depend on both primary inputs (composition, spacegroup) and derived properties (lattice)
-    depends_on: ["composition", "spacegroup", "lattice"] # Depend on all global encoders
+    has_conditioning: true
+    depends_on:
+    - composition
+    - spacegroup
+    - lattice
+    - wyckoff
   coordinate:
-    # New dedicated coordinate encoder
     hidden_dim: 128
     num_layers: 2
     nhead: ${model.nhead}
     dim_feedforward: ${model.dim_feedforward}
     dropout: ${model.dropout}
-    has_conditioning: true # Enable conditioning
-    # Depend on both primary inputs (composition, spacegroup) and derived properties (lattice)
-    depends_on: ["composition", "spacegroup", "lattice"] # Depend on all global encoders
-
-# --- Optimizer & Loss Params ---
+    has_conditioning: true
+    depends_on:
+    - composition
+    - spacegroup
+    - lattice
+    - wyckoff
 learning_rate: 1e-4
 weight_decay: 0.01
 sg_loss_weight: 1.0
 lattice_loss_weight: 1.0
+wyckoff_loss_weight: 1.0
 type_loss_weight: 1.0
 coord_loss_weight: 1.0
 eps: 1e-6
-
-# --- Decoder Configuration ---
-# Define which decoders to use and their specific parameters
 decoder_configs:
   spacegroup:
-    sg_vocab_size: 230 # 1-230 space group range
-  lattice:
-    # Dedicated lattice decoder - uses default params
-  atom_type:
-    # Atom type decoder - automatically uses effective_type_vocab_size
+    sg_vocab_size: 230
+  lattice: null
+  wyckoff:
+    condition_on:
+    - sg
+  atom_type: null
   coordinate:
-    eps: 1e-6 # Minimum value for numerical stability
-
-# --- Encoding/Decoding Order ---
-# Order in which encoders and decoders are applied
+    eps: 1e-6
 encoding_order:
-  ["composition", "spacegroup", "lattice", "atom_type", "coordinate"]
-decoding_order: ["spacegroup", "lattice", "atom_type", "coordinate"]
+- composition
+- spacegroup
+- lattice
+- wyckoff
+- atom_type
+- coordinate
+decoding_order:
+- spacegroup
+- lattice
+- wyckoff
+- atom_type
+- coordinate

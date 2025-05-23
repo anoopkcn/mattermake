@@ -43,7 +43,7 @@ def hct_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "spacegroup": torch.zeros((0, 1), dtype=torch.long),
                 "lattice": torch.zeros((0, 6), dtype=torch.float),
                 "atom_types": torch.zeros((0, 0), dtype=torch.long),
-                "atom_wyckoffs": torch.zeros((0, 0), dtype=torch.long),
+                "wyckoff": torch.zeros((0, 0), dtype=torch.long),
                 "atom_coords": torch.zeros((0, 0, 3), dtype=torch.float),
                 "atom_mask": torch.zeros((0, 0), dtype=torch.bool),
                 "lengths": torch.zeros((0,), dtype=torch.long),
@@ -61,7 +61,7 @@ def hct_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
 
             # Batch variable-length tensors (Atom sequences)
             atom_types_list = [item["atom_types"] for item in valid_batch]
-            atom_wyckoffs_list = [item["atom_wyckoffs"] for item in valid_batch]
+            wyckoff_list = [item["wyckoff"] for item in valid_batch]
             atom_coords_list = [item["atom_coords"] for item in valid_batch]
 
             # Get sequence lengths BEFORE padding (includes START/END tokens if added)
@@ -73,8 +73,8 @@ def hct_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
             atom_types_padded = pad_sequence(
                 atom_types_list, batch_first=True, padding_value=ATOM_TYPE_PAD_IDX
             )
-            atom_wyckoffs_padded = pad_sequence(
-                atom_wyckoffs_list, batch_first=True, padding_value=ATOM_WYCKOFF_PAD_IDX
+            wyckoff_padded = pad_sequence(
+                wyckoff_list, batch_first=True, padding_value=ATOM_WYCKOFF_PAD_IDX
             )
             atom_coords_padded = pad_sequence(
                 atom_coords_list, batch_first=True, padding_value=ATOM_COORD_PAD_VAL
@@ -94,7 +94,7 @@ def hct_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "spacegroup": spacegroup_batch,
                 "lattice": lattice_batch,
                 "atom_types": atom_types_padded,
-                "atom_wyckoffs": atom_wyckoffs_padded,
+                "wyckoff": wyckoff_padded,
                 "atom_coords": atom_coords_padded,
                 "atom_mask": atom_mask,  # Mask indicating non-padded atom entries (True where valid)
                 "lengths": lengths,  # Original lengths of atom sequences (incl. START/END)
@@ -111,7 +111,7 @@ def hct_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "spacegroup": torch.ones((1, 1), dtype=torch.long),  # Space group 1
                 "lattice": torch.ones((1, 6), dtype=torch.float),  # Unit cell
                 "atom_types": torch.ones((1, 1), dtype=torch.long),  # Single atom
-                "atom_wyckoffs": torch.ones((1, 1), dtype=torch.long),  # Single Wyckoff
+                "wyckoff": torch.ones((1, 1), dtype=torch.long),  # Single Wyckoff
                 "atom_coords": torch.zeros((1, 1, 3), dtype=torch.float),  # Origin
                 "atom_mask": torch.ones((1, 1), dtype=torch.bool),  # Valid atom
                 "lengths": torch.ones((1,), dtype=torch.long),  # Length 1
@@ -125,7 +125,7 @@ def hct_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
             "spacegroup": torch.ones((1, 1), dtype=torch.long),
             "lattice": torch.ones((1, 6), dtype=torch.float),
             "atom_types": torch.ones((1, 1), dtype=torch.long),
-            "atom_wyckoffs": torch.ones((1, 1), dtype=torch.long),
+            "wyckoff": torch.ones((1, 1), dtype=torch.long),
             "atom_coords": torch.zeros((1, 1, 3), dtype=torch.float),
             "atom_mask": torch.ones((1, 1), dtype=torch.bool),
             "lengths": torch.ones((1,), dtype=torch.long),
@@ -169,11 +169,20 @@ class HCTDataModule(LightningModule):
             f"Initializing HCTDataModule with batch_size={batch_size}, data_dir={processed_data_dir}"
         )
 
-        # Set file paths for the single-file approach
+        # Set file paths - support both old and new directory structures
         self.data_dir = Path(processed_data_dir)
-        self.train_file = self.data_dir / "train.pt"
-        self.val_file = self.data_dir / "val.pt"
-        self.test_file = self.data_dir / "test.pt"
+
+        train_new = self.data_dir / "train" / "data.pt"
+        val_new = self.data_dir / "val" / "data.pt"
+        test_new = self.data_dir / "test" / "data.pt"
+
+        train_old = self.data_dir / "train.pt"
+        val_old = self.data_dir / "val.pt"
+        test_old = self.data_dir / "test.pt"
+
+        self.train_file = train_new if train_new.exists() else train_old
+        self.val_file = val_new if val_new.exists() else val_old
+        self.test_file = test_new if test_new.exists() else test_old
 
         self.train_dataset: Optional[HCTDataset] = None
         self.val_dataset: Optional[HCTDataset] = None
@@ -205,6 +214,13 @@ class HCTDataModule(LightningModule):
         if missing_files:
             missing_list = ", ".join(str(f) for f in missing_files)
             log.warning(f"Missing data files: {missing_list}")
+
+        if (self.data_dir / "train" / "data.pt").exists():
+            log.info("Using new directory structure (train/data.pt, val/data.pt, test/data.pt)")
+        elif (self.data_dir / "train.pt").exists():
+            log.info("Using old directory structure (train.pt, val.pt, test.pt)")
+        else:
+            log.warning("No recognized data structure found in directory")
 
     def setup(self, stage: Optional[str] = None):
         log.info(f"Setting up HCTDataModule for stage: {stage}")
@@ -259,7 +275,7 @@ class HCTDataModule(LightningModule):
         batch_size = getattr(self.hparams, "batch_size", 32)
         num_workers = getattr(self.hparams, "num_workers", 4)
         pin_memory = getattr(self.hparams, "pin_memory", True)
-        
+
         log.debug(
             f"Creating dataloader with batch_size={batch_size}, shuffle={shuffle}"
         )
@@ -288,7 +304,7 @@ class HCTDataModule(LightningModule):
         test_workers = (
             min(original_workers, 2) if original_workers > 0 else 0
         )
-        
+
         # Temporarily override num_workers for testing
         current_num_workers = getattr(self.hparams, "num_workers", 4)
         setattr(self.hparams, "num_workers", test_workers)

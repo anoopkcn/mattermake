@@ -8,17 +8,22 @@ from mattermake.models.components.modular_encoders import (
     LatticeEncoder,
     AtomTypeEncoder,
     AtomCoordinateEncoder,
+    WyckoffEncoder,
 )
 from mattermake.models.components.modular_decoders import (
     SpaceGroupDecoder,
     LatticeDecoder,
     AtomTypeDecoder,
     AtomCoordinateDecoder,
+    WyckoffDecoder,
     OrderedDecoderRegistry,
 )
 
 from mattermake.models.components.modular_attention import ModularCrossAttention
 from mattermake.models.components.positional_embeddings import RotaryPositionalEmbedding
+from mattermake.utils import RankedLogger
+
+log = RankedLogger(__name__, rank_zero_only=True)
 
 
 class ModularHierarchicalCrystalTransformerBase(nn.Module):
@@ -32,6 +37,7 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
         # --- Vocabularies & Indices ---
         element_vocab_size: int = 100,
         sg_vocab_size: int = 231,
+        wyckoff_vocab_size: Optional[int] = None,
         pad_idx: int = 0,
         start_idx: int = -1,
         end_idx: int = -2,
@@ -54,6 +60,12 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
         **kwargs,  # Catch any extra hparams
     ):
         super().__init__()
+        
+        # Auto-calculate Wyckoff vocab size if not provided
+        if wyckoff_vocab_size is None:
+            from mattermake.data.components.wyckoff_interface import get_effective_wyckoff_vocab_size
+            wyckoff_vocab_size = get_effective_wyckoff_vocab_size()
+        
         # Store hyperparameters, excluding self, kwargs, __class__
         self.hparams = {
             k: v
@@ -68,6 +80,7 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
         self.start_idx = start_idx
         self.end_idx = end_idx
         self.d_model = d_model
+        self.wyckoff_vocab_size = wyckoff_vocab_size
 
         # --- Create Modular Encoders ---
         # Ensure encoder_configs is not None
@@ -161,6 +174,13 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
                     dropout=config.get("dropout", dropout),
                     has_conditioning=config.get("has_conditioning", False),
                 )
+            elif name == "wyckoff":
+                self.encoders[name] = WyckoffEncoder(
+                    d_output=d_model,
+                    vocab_size=config.get("vocab_size", None),  # Auto-calculated in WyckoffEncoder
+                    embed_dim=config.get("embed_dim", 64),
+                    has_conditioning=config.get("has_conditioning", False),
+                )
             else:
                 print(f"Warning: Unknown encoder type '{name}' in config. Skipping.")
 
@@ -187,6 +207,7 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
             decoder_configs_local = {
                 "spacegroup": {"sg_vocab_size": 230},  # 1-230 range
                 "lattice": {},  # Default parameters
+                "wyckoff": {"condition_on": ["sg"]},  # Default wyckoff decoder
                 "atom_type": {"vocab_size": self.effective_type_vocab_size},
                 "coordinate": {"eps": eps},
             }
@@ -215,11 +236,17 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
                 decoders[name] = AtomCoordinateDecoder(
                     d_model=d_model, eps=config.get("eps", eps)
                 )
+            elif name == "wyckoff":
+                decoders[name] = WyckoffDecoder(
+                    d_model=d_model,
+                    vocab_size=config.get("vocab_size", None),  # Auto-calculated in WyckoffDecoder
+                    condition_on=config.get("condition_on", []),
+                )
             else:
                 print(f"Warning: Unknown decoder type '{name}' in config. Skipping.")
 
         # Default decoding order if not specified
-        decoding_order_local = ["spacegroup", "lattice", "atom_type", "coordinate"] if decoding_order is None else decoding_order
+        decoding_order_local = ["spacegroup", "lattice", "wyckoff", "atom_type", "coordinate"] if decoding_order is None else decoding_order
 
         # Create ordered decoder registry
         self.decoder_registry = OrderedDecoderRegistry(decoders, order=decoding_order_local)
@@ -337,6 +364,31 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
                     output = encoder(
                         atom_coords_input, condition_context, atom_mask_input
                     )
+                elif name == "wyckoff":
+                    # Use teacher forcing (shifted right for decoder inputs)
+                    if "wyckoff" in batch:
+                        wyckoff_target = batch["wyckoff"]
+                        wyckoff_input = wyckoff_target[:, :-1]
+                        atom_mask_input = atom_mask[:, :-1]
+                        
+                        # Validate wyckoff indices before passing to encoder
+                        if wyckoff_input.numel() > 0:
+                            max_wyckoff_idx = wyckoff_input.max().item()
+                            min_wyckoff_idx = wyckoff_input.min().item()
+                            
+                            # Get vocab size from encoder if available
+                            encoder_vocab_size = getattr(encoder, 'vocab_size', None)
+                            if encoder_vocab_size and max_wyckoff_idx >= encoder_vocab_size:
+                                print(f"Warning: Wyckoff indices out of range. Max index: {max_wyckoff_idx}, Encoder vocab size: {encoder_vocab_size}")
+                                print(f"Wyckoff input shape: {wyckoff_input.shape}")
+                                print(f"Wyckoff index range: [{min_wyckoff_idx}, {max_wyckoff_idx}]")
+                        
+                        output = encoder(
+                            wyckoff_input, condition_context, atom_mask_input
+                        )
+                    else:
+                        print(f"Warning: wyckoff data not found in batch for encoder '{name}'. Skipping.")
+                        continue
                 elif name in batch:  # Generic fallback for other encoders
                     output = encoder(batch[name], condition_context)
                 else:
@@ -349,15 +401,36 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
                 if torch.isnan(output).any():
                     output = torch.nan_to_num(output, nan=0.0, posinf=1e6, neginf=-1e6)
 
+                # Validate encoder output shape and fix if needed
+                if output.dim() == 2:
+                    # Add sequence dimension if missing
+                    output = output.unsqueeze(1)
+                elif output.dim() == 3:
+                    # Check if sequence length is reasonable
+                    if name in ["atom_type", "coordinate", "wyckoff"]:
+                        expected_seq_len = atom_types_target.size(1) - 1
+                        if output.size(1) != expected_seq_len:
+                            if output.size(1) > expected_seq_len:
+                                # Truncate to expected length
+                                output = output[:, :expected_seq_len, :]
+                            else:
+                                # Pad to expected length
+                                padding_size = expected_seq_len - output.size(1)
+                                padding = torch.zeros(batch_size, padding_size, self.d_model, device=device)
+                                output = torch.cat([output, padding], dim=1)
+                    
+                # Ensure output has correct shape
+                if output.size(-1) != self.d_model:
+                    print(f"Warning: Encoder '{name}' output feature dim {output.size(-1)} != d_model {self.d_model}")
+                
                 encoder_outputs[name] = output
             except Exception as e:
                 print(f"Error in encoder '{name}': {e}")
-                # Create safe fallback
-                seq_len = (
-                    1
-                    if name not in ["atom_type", "coordinate"]
-                    else atom_types_target.size(1) - 1
-                )
+                # Create safe fallback with proper shape
+                if name in ["atom_type", "coordinate", "wyckoff"]:
+                    seq_len = atom_types_target.size(1) - 1
+                else:
+                    seq_len = 1
                 dummy_shape = [batch_size, seq_len, self.d_model]
                 encoder_outputs[name] = torch.zeros(dummy_shape, device=device)
 
@@ -366,6 +439,14 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
         global_encoder_outputs = {}
         for name, tensor in encoder_outputs.items():
             if name not in ["atom_type", "coordinate"]:
+                # Ensure consistent shape for global encoders (should be [batch, 1, d_model])
+                if tensor.dim() == 3 and tensor.size(1) > 1:
+                    # Take first token for global encoders
+                    tensor = tensor[:, :1, :]
+                elif tensor.dim() == 2:
+                    # Add sequence dimension
+                    tensor = tensor.unsqueeze(1)
+                
                 if torch.isnan(tensor).any():
                     global_encoder_outputs[name] = torch.nan_to_num(
                         tensor, nan=0.0, posinf=1e6, neginf=-1e6
@@ -402,20 +483,22 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
 
         # --- Step 4: Atom Sequence Decoding (Teacher Forcing) ---
         # Prepare atom decoder input by combining atom type and coord encodings
+        expected_atom_seq_len = atom_types_target.size(1) - 1
         atom_type_encoded = encoder_outputs.get(
             "atom_type",
-            torch.zeros(
-                (batch_size, atom_types_target.size(1) - 1, self.d_model), device=device
-            ),
+            torch.zeros((batch_size, expected_atom_seq_len, self.d_model), device=device),
         )
 
         coord_encoded = encoder_outputs.get(
             "coordinate",
-            torch.zeros(
-                (batch_size, atom_coords_target.size(1) - 1, self.d_model),
-                device=device,
-            ),
+            torch.zeros((batch_size, expected_atom_seq_len, self.d_model), device=device),
         )
+        
+        # Ensure both encodings have the same sequence length
+        if atom_type_encoded.size(1) != coord_encoded.size(1):
+            min_seq_len = min(atom_type_encoded.size(1), coord_encoded.size(1))
+            atom_type_encoded = atom_type_encoded[:, :min_seq_len, :]
+            coord_encoded = coord_encoded[:, :min_seq_len, :]
 
         # Project the encoded representations together
         atom_decoder_input = (atom_type_encoded + coord_encoded) / 2.0
@@ -486,10 +569,11 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
                 atom_decoder_output, nan=0.0, posinf=1e6, neginf=-1e6
             )
 
-        # --- Step 5: Run Atom Type and Coordinate Decoders ---
-        # Get atom type and coordinate decoders
+        # --- Step 5: Run Atom Type, Wyckoff, and Coordinate Decoders ---
+        # Get atom type, wyckoff, and coordinate decoders
         atom_type_decoder = self.decoder_registry.decoders["atom_type"]
         coord_decoder = self.decoder_registry.decoders["coordinate"]
+        wyckoff_decoder = self.decoder_registry.decoders["wyckoff"] if "wyckoff" in self.decoder_registry.decoders else None
 
         # Run the decoders
         atom_type_outputs = atom_type_decoder(
@@ -498,11 +582,19 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
         coord_outputs = coord_decoder(
             atom_decoder_output, all_contexts, atom_mask_input
         )
+        
+        # Run wyckoff decoder if available
+        wyckoff_outputs = {}
+        if wyckoff_decoder is not None:
+            wyckoff_outputs = wyckoff_decoder(
+                atom_decoder_output, all_contexts, atom_mask_input
+            )
 
         # --- Step 6: Combine All Outputs ---
         predictions = {
             **sg_outputs,  # sg_logits
             **lattice_outputs,  # lattice_mean, lattice_log_var
+            **wyckoff_outputs,  # wyckoff_logits
             **atom_type_outputs,  # type_logits
             **coord_outputs,  # coord_mean, coord_log_var
         }
@@ -543,9 +635,45 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
         if not contexts:
             return None
 
-        # For now, just average the contexts
-        # Can be enhanced with learned fusion later
-        return torch.stack(contexts).mean(dim=0)
+        # Check if all tensors have the same shape
+        shapes = [ctx.shape for ctx in contexts]
+        if len(set(shapes)) == 1:
+            # All shapes are the same, use simple stacking
+            return torch.stack(contexts).mean(dim=0)
+        
+        # Handle shape mismatches by finding compatible dimensions
+        # Take the first tensor as reference and pad/truncate others to match
+        reference_shape = contexts[0].shape
+        batch_size = reference_shape[0]
+        seq_len = reference_shape[1] if len(reference_shape) > 1 else 1
+        feature_dim = reference_shape[-1]
+        
+        # Pad or truncate all tensors to match reference sequence length
+        aligned_contexts = []
+        for ctx in contexts:
+            if len(ctx.shape) == 3:  # (batch, seq, features)
+                current_seq_len = ctx.shape[1]
+                if current_seq_len < seq_len:
+                    # Pad with zeros
+                    padding = torch.zeros(batch_size, seq_len - current_seq_len, feature_dim, 
+                                        device=ctx.device, dtype=ctx.dtype)
+                    aligned_ctx = torch.cat([ctx, padding], dim=1)
+                elif current_seq_len > seq_len:
+                    # Truncate
+                    aligned_ctx = ctx[:, :seq_len, :]
+                else:
+                    aligned_ctx = ctx
+            else:
+                # Handle 2D tensors by expanding to match reference
+                if len(ctx.shape) == 2:  # (batch, features)
+                    aligned_ctx = ctx.unsqueeze(1).expand(-1, seq_len, -1)
+                else:
+                    aligned_ctx = ctx
+            
+            aligned_contexts.append(aligned_ctx)
+        
+        # Now stack and average
+        return torch.stack(aligned_contexts).mean(dim=0)
 
     @property
     def device(self):
@@ -743,13 +871,18 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
             [[start_type_token]], device=device, dtype=torch.long
         )
         current_coords = start_coord_token.to(device)
+        current_wyckoff = torch.tensor(
+            [[start_type_token]], device=device, dtype=torch.long
+        )
 
         # For storing generated outputs
         generated_types = []
+        generated_wyckoffs = []
         generated_coords = []
 
         # Initial input sequences
         input_type_seq = current_type
+        input_wyckoff_seq = current_wyckoff
         input_coord_seq = current_coords
 
         for step in range(max_atoms):
@@ -798,8 +931,23 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
                 # Fallback if component not available
                 coord_encoded = torch.zeros((input_coord_seq.size(0), input_coord_seq.size(1), self.d_model), device=input_coord_seq.device)
 
-            # Combine type and coordinate encodings
-            atom_decoder_input = (type_encoded + coord_encoded) / 2.0
+            # Encode Wyckoff positions if available
+            wyckoff_encoded = torch.zeros((input_wyckoff_seq.size(0), input_wyckoff_seq.size(1), self.d_model), device=input_wyckoff_seq.device)
+            if "wyckoff" in self.encoders:
+                wyckoff_encoder = self.encoders["wyckoff"]
+                try:
+                    # Map special tokens for Wyckoff (use same special token mapping as types)
+                    mapped_wyckoffs = input_wyckoff_seq.clone()
+                    mapped_wyckoffs[input_wyckoff_seq == self.start_idx] = 1  # Use 1 for START in Wyckoff vocab
+                    mapped_wyckoffs[input_wyckoff_seq == self.end_idx] = 1   # Use 1 for END in Wyckoff vocab  
+                    mapped_wyckoffs[input_wyckoff_seq == self.pad_idx] = 0   # Keep 0 for PAD
+                    
+                    wyckoff_encoded = wyckoff_encoder(mapped_wyckoffs)
+                except Exception as e:
+                    log.warning(f"Error encoding Wyckoff positions: {e}")
+
+            # Combine type, wyckoff, and coordinate encodings
+            atom_decoder_input = (type_encoded + wyckoff_encoded + coord_encoded) / 3.0
 
             # Apply Rotary Positional Embeddings with step offset
             pos_encoded_input = self.atom_pos_encoder(atom_decoder_input, offset=step)
@@ -836,9 +984,10 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
             )
 
             # --- 4d. Predict next atom properties with decoders ---
-            # Get atom type and coordinate decoders
+            # Get atom type, wyckoff, and coordinate decoders
             atom_type_decoder = self.decoder_registry.decoders["atom_type"]
             coord_decoder = self.decoder_registry.decoders["coordinate"]
+            wyckoff_decoder = self.decoder_registry.decoders["wyckoff"] if "wyckoff" in self.decoder_registry.decoders else None
 
             # Run decoders on the last token output
             atom_type_outputs = atom_type_decoder(
@@ -847,6 +996,13 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
             coord_outputs = coord_decoder(
                 last_token_output.unsqueeze(1), decoder_contexts, None
             )
+            
+            # Run wyckoff decoder if available
+            wyckoff_outputs = {}
+            if wyckoff_decoder is not None:
+                wyckoff_outputs = wyckoff_decoder(
+                    last_token_output.unsqueeze(1), decoder_contexts, None
+                )
 
             # Extract predictions
             type_logits = atom_type_outputs["type_logits"].squeeze(
@@ -854,11 +1010,25 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
             )  # Remove seq_len dimension
             coord_mean = coord_outputs["coord_mean"].squeeze(1)
             coord_log_var = coord_outputs["coord_log_var"].squeeze(1)
+            
+            # Extract wyckoff predictions if available
+            wyckoff_logits = None
+            if wyckoff_outputs and "wyckoff_logits" in wyckoff_outputs:
+                wyckoff_logits = wyckoff_outputs["wyckoff_logits"].squeeze(1)
+                
+                # Apply space group masking for wyckoff positions
+                if sg_sampled is not None:
+                    from mattermake.data.components.wyckoff_interface import create_wyckoff_mask
+                    sg_tensor = torch.tensor([sg_sampled], device=device)
+                    wyckoff_mask = create_wyckoff_mask(sg_tensor, device)  # (1, vocab_size)
+                    wyckoff_logits = wyckoff_logits.masked_fill(~wyckoff_mask, -1e9)
 
             # Final safeguard for all outputs
             type_logits = torch.nan_to_num(type_logits, nan=0.0)
             coord_mean = torch.nan_to_num(coord_mean, nan=0.5)
             coord_log_var = torch.nan_to_num(coord_log_var, nan=-3.0)
+            if wyckoff_logits is not None:
+                wyckoff_logits = torch.nan_to_num(wyckoff_logits, nan=0.0)
 
             # --- 4e. Sample next atom type ---
             if atom_discrete_sampling_mode == "argmax":
@@ -883,7 +1053,16 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
             if next_type.item() == self.end_idx:
                 break
 
-            # --- 4f. Sample next coordinates ---
+            # --- 4f. Sample next Wyckoff position ---
+            next_wyckoff = torch.tensor([0], device=device)  # Default to padding
+            if wyckoff_logits is not None:
+                if atom_discrete_sampling_mode == "argmax":
+                    next_wyckoff = torch.argmax(wyckoff_logits, dim=-1, keepdim=True)
+                else:
+                    wyckoff_probs = torch.softmax(wyckoff_logits / temperature, dim=-1)
+                    next_wyckoff = torch.multinomial(wyckoff_probs, num_samples=1)
+
+            # --- 4g. Sample next coordinates ---
             coord_std = torch.exp(0.5 * coord_log_var).clamp(
                 max=0.2
             )  # Limit standard deviation
@@ -901,9 +1080,11 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
 
             # --- 4g. Append and update sequences ---
             generated_types.append(next_type.item())
+            generated_wyckoffs.append(next_wyckoff.item())
             generated_coords.append(next_coords)  # Keep as tensor (1, 3)
 
             input_type_seq = torch.cat([input_type_seq, next_type.to(device)], dim=1)
+            input_wyckoff_seq = torch.cat([input_wyckoff_seq, next_wyckoff.to(device)], dim=1)
             input_coord_seq = torch.cat(
                 [input_coord_seq, next_coords.unsqueeze(1).to(device)], dim=1
             )
@@ -917,6 +1098,9 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
             "lattice_matrix_sampled": lattice_matrix_sampled.cpu(),  # Return 3x3 matrix
             "atom_types_generated": torch.tensor(
                 generated_types, dtype=torch.long, device="cpu"
+            ),
+            "wyckoff_generated": torch.tensor(
+                generated_wyckoffs, dtype=torch.long, device="cpu"
             ),
             "atom_coords_generated": torch.cat(generated_coords, dim=0).cpu()
             if generated_coords

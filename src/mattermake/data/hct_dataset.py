@@ -13,7 +13,7 @@ class HCTDataset(Dataset):
     PyTorch Dataset for loading pre-processed HCT data.
     Supports both individual structure files and batch files containing multiple structures.
     Each structure is a dictionary with keys: 'composition', 'spacegroup', 'lattice', 'atom_types',
-    'atom_wyckoffs', 'atom_coords'.
+    'wyckoff', 'atom_coords'.
 
     Optionally adds START and END tokens to the atom sequences using a
     unified scheme (PAD=0, START=-1, END=-2).
@@ -114,7 +114,7 @@ class HCTDataset(Dataset):
                 - 'spacegroup': (1,) tensor containing the space group number (long) - needs adjustment if using 0-based indexing later
                 - 'lattice': (6,) tensor containing lattice parameters (float)
                 - 'atom_types': (seq_len,) tensor of atomic/token indices (long). Valid >= 1.
-                - 'atom_wyckoffs': (seq_len,) tensor of Wyckoff/token indices (long). Valid >= 1.
+                - 'wyckoff': (seq_len,) tensor of Wyckoff/token indices (long). Valid >= 1.
                 - 'atom_coords': (seq_len, 3) tensor of coordinates (float)
                 - 'material_id': Original material ID (str)
         """
@@ -132,7 +132,7 @@ class HCTDataset(Dataset):
             # --- Load and prepare sequences ---
             try:
                 atom_types = list(data.get("atom_types", []))
-                atom_wyckoffs = list(data.get("atom_wyckoffs", []))
+                atom_wyckoffs = list(data.get("wyckoff", []))
                 raw_coords = data.get("atom_coords", [])
             except Exception as e:
                 log.error(
@@ -190,7 +190,7 @@ class HCTDataset(Dataset):
                 ) != len(atom_wyckoffs):
                     log.warning(
                         f"Coordinate list length ({len(atom_coords_list)}) doesn't match atom_types ({len(atom_types)}) "
-                        f"or atom_wyckoffs ({len(atom_wyckoffs)}) for structure {idx}. Using minimal valid structure."
+                        f"or wyckoff ({len(atom_wyckoffs)}) for structure {idx}. Using minimal valid structure."
                     )
                     return self._create_placeholder_structure(idx)
             except Exception as e:
@@ -220,7 +220,7 @@ class HCTDataset(Dataset):
             try:
                 final_data = {}
                 final_data["atom_types"] = torch.tensor(atom_types, dtype=torch.long)
-                final_data["atom_wyckoffs"] = torch.tensor(
+                final_data["wyckoff"] = torch.tensor(
                     atom_wyckoffs, dtype=torch.long
                 )
 
@@ -336,7 +336,7 @@ class HCTDataset(Dataset):
                 "spacegroup": torch.tensor([1], dtype=torch.long),
                 "lattice": torch.ones(6, dtype=torch.float),
                 "atom_types": torch.tensor(atom_types, dtype=torch.long),
-                "atom_wyckoffs": torch.tensor(atom_wyckoffs, dtype=torch.long),
+                "wyckoff": torch.tensor(atom_wyckoffs, dtype=torch.long),
                 "atom_coords": torch.tensor(atom_coords, dtype=torch.float),
                 "material_id": f"placeholder_{idx}",
             }
@@ -350,7 +350,7 @@ class HCTDataset(Dataset):
                 "atom_types": torch.tensor(
                     [self.start_idx, self.end_idx], dtype=torch.long
                 ),
-                "atom_wyckoffs": torch.tensor(
+                "wyckoff": torch.tensor(
                     [self.start_idx, self.end_idx], dtype=torch.long
                 ),
                 "atom_coords": torch.zeros((2, 3), dtype=torch.float),

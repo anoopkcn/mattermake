@@ -1,0 +1,45 @@
+# HCT model configuration
+_target_: mattermake.models.hct_module.HierarchicalCrystalTransformer
+
+# --- Vocabularies & Indices ---
+element_vocab_size: 100  # Size of composition count vector input
+sg_vocab_size: 231  # 1-230 -> map to 0-230 for embedding/pred (0=PAD/unused?)
+wyckoff_vocab_size: 200  # Max wyckoff index + 1 (assuming indices >= 1)
+pad_idx: 0
+start_idx: -1
+end_idx: -2
+
+# --- Model Dimensions ---
+d_model: 256
+sg_embed_dim: 64  # Embedding dim for SG before projection
+type_embed_dim: 64
+wyckoff_embed_dim: 64
+
+# --- Transformer Params ---
+nhead: 8
+num_comp_encoder_layers: 2  # Encoder for composition
+num_atom_decoder_layers: 4  # Decoder for atom sequence
+dim_feedforward: 1024
+dropout: 0.1
+
+# --- Control Flags ---
+condition_lattice_on_sg: true
+
+# --- Optimizer & Loss Params ---
+learning_rate: 1e-4
+weight_decay: 0.01
+
+# Keep optimizer config for reference, but it's not used directly
+# since the model has its own configure_optimizers method
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 1e-4
+  weight_decay: 0.01
+
+sg_loss_weight: 1.0
+lattice_loss_weight: 1.0  # NLL weight
+type_loss_weight: 1.0
+wyckoff_loss_weight: 1.0
+coord_loss_weight: 1.0  # NLL weight
+eps: 1e-6  # Small value for stability (e.g., variance)

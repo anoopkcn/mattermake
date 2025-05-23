@@ -12,6 +12,7 @@ from mattermake.data.components.cif_processing import (
     get_lattice_parameters,
     get_asymmetric_unit_atoms,
 )
+from mattermake.data.components.wyckoff_interface import wyckoff_tuple_to_index
 from mattermake.utils import RankedLogger
 
 log = RankedLogger(__name__, rank_zero_only=True)
@@ -39,13 +40,23 @@ def process_structure(
         atom_wyckoffs = [item[1] for item in atom_seq]
         atom_coords = [item[2] for item in atom_seq]
 
+        # Convert Wyckoff letters to global indices
+        wyckoff_indices = []
+        for wyckoff_letter in atom_wyckoffs:
+            if isinstance(wyckoff_letter, str):
+                idx = wyckoff_tuple_to_index(sg_num, wyckoff_letter)
+                wyckoff_indices.append(idx)
+            else:
+                # Handle numeric Wyckoff positions (legacy format)
+                wyckoff_indices.append(0)  # Use padding index
+
         return {
             "material_id": material_id,
             "composition": torch.tensor(comp_vec, dtype=torch.int64),
             "spacegroup": torch.tensor(sg_num, dtype=torch.int64),
             "lattice": torch.tensor(lattice_params, dtype=torch.float32),
             "atom_types": torch.tensor(atom_types, dtype=torch.int64),
-            "atom_wyckoffs": torch.tensor(atom_wyckoffs, dtype=torch.int64),
+            "wyckoff": torch.tensor(wyckoff_indices, dtype=torch.int64),
             "atom_coords": torch.tensor(atom_coords, dtype=torch.float32),
         }
     except Exception as e:

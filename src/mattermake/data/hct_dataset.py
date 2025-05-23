@@ -220,9 +220,7 @@ class HCTDataset(Dataset):
             try:
                 final_data = {}
                 final_data["atom_types"] = torch.tensor(atom_types, dtype=torch.long)
-                final_data["wyckoff"] = torch.tensor(
-                    atom_wyckoffs, dtype=torch.long
-                )
+                final_data["wyckoff"] = torch.tensor(atom_wyckoffs, dtype=torch.long)
 
                 if atom_coords_list:
                     final_data["atom_coords"] = torch.tensor(

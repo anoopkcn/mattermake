@@ -25,7 +25,7 @@ class PositionalEncoding(nn.Module):
         Args:
             x: Tensor, shape [seq_len, batch_size, embedding_dim]
         """
-        x = x + self.pe[:x.size(0)]
+        x = x + self.pe[: x.size(0)]
         return self.dropout(x)
 
 
@@ -85,10 +85,10 @@ class RotaryPositionalEmbedding(nn.Module):
             )
 
         # Get the right part of the precomputed frequency tensor
-        cos = self.freqs_cos[offset:offset + seq_len].unsqueeze(
+        cos = self.freqs_cos[offset : offset + seq_len].unsqueeze(
             0
         )  # [1, seq, d_model/2]
-        sin = self.freqs_sin[offset:offset + seq_len].unsqueeze(
+        sin = self.freqs_sin[offset : offset + seq_len].unsqueeze(
             0
         )  # [1, seq, d_model/2]
 

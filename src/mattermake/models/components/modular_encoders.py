@@ -159,60 +159,62 @@ class SpaceGroupEncoder(EncoderBase):
 
 class WyckoffEncoder(EncoderBase):
     """Encoder for Wyckoff positions."""
-    
+
     def __init__(
         self,
         d_output: int,
         vocab_size: Optional[int] = None,
         embed_dim: int = 64,
         has_conditioning: bool = False,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(d_output)
-        
+
         # Import here to avoid circular imports
-        from mattermake.data.components.wyckoff_interface import get_effective_wyckoff_vocab_size
-        
+        from mattermake.data.components.wyckoff_interface import (
+            get_effective_wyckoff_vocab_size,
+        )
+
         if vocab_size is None:
             vocab_size = get_effective_wyckoff_vocab_size()
-        
+
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
-    
+
         # Validate vocab size
         if vocab_size <= 1:
             raise ValueError(f"WyckoffEncoder vocab_size must be > 1, got {vocab_size}")
         if vocab_size > 50000:  # Sanity check for unreasonably large vocab
             print(f"Warning: WyckoffEncoder vocab_size is very large: {vocab_size}")
-    
+
         # Embedding layer for Wyckoff positions
         self.wyckoff_embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
-        
+
         # Project to d_output
         self.output_projection = nn.Linear(embed_dim, d_output)
-        
+
         # Conditioning projector (if needed)
         if has_conditioning:
             self.condition_projector = nn.Linear(d_output, d_output)
-    
+
     def forward(
-        self, 
-        x: torch.Tensor, 
+        self,
+        x: torch.Tensor,
         condition_context: Optional[torch.Tensor] = None,
-        mask: Optional[torch.Tensor] = None
+        mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Args:
             x: (B, L) tensor of Wyckoff indices
             condition_context: Optional conditioning context
             mask: Optional (B, L) boolean mask (True where padded)
-        
+
         Returns:
             (B, L, d_output) tensor of Wyckoff embeddings
         """
         # Ensure indices are long type and within bounds
         x = x.long()
-        
+
         # Map special tokens to valid vocabulary indices
         # PAD = 0 (stays 0)
         # START = -1 -> vocab_size - 2
@@ -220,27 +222,31 @@ class WyckoffEncoder(EncoderBase):
         x_mapped = x.clone()
         x_mapped = torch.where(x == -1, self.vocab_size - 2, x_mapped)  # START token
         x_mapped = torch.where(x == -2, self.vocab_size - 1, x_mapped)  # END token
-        
+
         # Check for any remaining out-of-bounds indices after mapping
         max_val = x_mapped.max().item() if x_mapped.numel() > 0 else 0
         min_val = x_mapped.min().item() if x_mapped.numel() > 0 else 0
-        
+
         if max_val >= self.vocab_size or min_val < 0:
-            print(f"Warning: Wyckoff indices still out of bounds after mapping. Min: {min_val}, Max: {max_val}, Vocab size: {self.vocab_size}")
-            print(f"Clamping remaining indices to valid range [0, {self.vocab_size - 1}]")
-        
+            print(
+                f"Warning: Wyckoff indices still out of bounds after mapping. Min: {min_val}, Max: {max_val}, Vocab size: {self.vocab_size}"
+            )
+            print(
+                f"Clamping remaining indices to valid range [0, {self.vocab_size - 1}]"
+            )
+
         # Clamp any remaining out-of-bounds indices
         x_clamped = torch.clamp(x_mapped, 0, self.vocab_size - 1)
-        
+
         # Get embeddings
         embeddings = self.wyckoff_embedding(x_clamped)  # (B, L, embed_dim)
-        
+
         # Project to output dimension
         output = self.output_projection(embeddings)  # (B, L, d_output)
-        
+
         # Apply conditioning if available
         output = self._apply_conditioning(output, condition_context)
-        
+
         return output
 
 
@@ -355,9 +361,7 @@ class LatticeEncoder(EncoderBase):
         """
         # Ensure input is flattened (batch_size, 9)
         if x.dim() == 3 and x.shape[1:] == (3, 3):
-            lattice_flat = x.reshape(
-                x.size(0), -1
-            )  # Flatten to (batch_size, 9)
+            lattice_flat = x.reshape(x.size(0), -1)  # Flatten to (batch_size, 9)
         elif x.dim() == 2 and x.shape[1] == 9:
             lattice_flat = x
         elif x.dim() == 2 and x.shape[1] == 6:
@@ -534,7 +538,9 @@ class AtomCoordinateEncoder(EncoderBase):
         # Handle mask dtype conversion to avoid bool/float mismatch
         if mask is not None:
             # Convert boolean mask to match tensor dtype
-            key_padding_mask = (~mask).to(dtype=torch.bool, device=processed_coords.device)
+            key_padding_mask = (~mask).to(
+                dtype=torch.bool, device=processed_coords.device
+            )
         else:
             key_padding_mask = None
         output = self.encoder(processed_coords, src_key_padding_mask=key_padding_mask)

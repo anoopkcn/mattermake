@@ -3,7 +3,7 @@ import torch
 from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Union, MutableMapping
+from typing import Optional, List, Dict, Any
 
 from mattermake.data.hct_dataset import HCTDataset
 from mattermake.utils import RankedLogger
@@ -191,8 +191,12 @@ class HCTDataModule(LightningModule):
 
         # Store dataset args for instantiation in setup()
         self.dataset_kwargs = {
-            "add_atom_start_token": getattr(self.hparams, "add_atom_start_end_tokens", True),
-            "add_atom_end_token": getattr(self.hparams, "add_atom_start_end_tokens", True),
+            "add_atom_start_token": getattr(
+                self.hparams, "add_atom_start_end_tokens", True
+            ),
+            "add_atom_end_token": getattr(
+                self.hparams, "add_atom_start_end_tokens", True
+            ),
             "start_token_idx": getattr(self.hparams, "atom_start_token_idx", -1),
             "end_token_idx": getattr(self.hparams, "atom_end_token_idx", -2),
             # start/end coords use defaults in HCTDataset
@@ -216,7 +220,9 @@ class HCTDataModule(LightningModule):
             log.warning(f"Missing data files: {missing_list}")
 
         if (self.data_dir / "train" / "data.pt").exists():
-            log.info("Using new directory structure (train/data.pt, val/data.pt, test/data.pt)")
+            log.info(
+                "Using new directory structure (train/data.pt, val/data.pt, test/data.pt)"
+            )
         elif (self.data_dir / "train.pt").exists():
             log.info("Using old directory structure (train.pt, val.pt, test.pt)")
         else:
@@ -301,9 +307,7 @@ class HCTDataModule(LightningModule):
         log.debug("Creating test dataloader")
         # Use fewer workers for testing to reduce risk of worker crashes
         original_workers = getattr(self.hparams, "num_workers", 4)
-        test_workers = (
-            min(original_workers, 2) if original_workers > 0 else 0
-        )
+        test_workers = min(original_workers, 2) if original_workers > 0 else 0
 
         # Temporarily override num_workers for testing
         current_num_workers = getattr(self.hparams, "num_workers", 4)

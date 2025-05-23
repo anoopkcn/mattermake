@@ -198,71 +198,77 @@ class AtomCoordinateDecoder(DecoderBase):
 
 class WyckoffDecoder(DecoderBase):
     """Decoder for Wyckoff positions with space group conditioning."""
-    
+
     def __init__(
         self,
         d_model: int,
         vocab_size: Optional[int] = None,
         condition_on: Optional[List[str]] = None,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(d_model)
-        
+
         # Import here to avoid circular imports
-        from mattermake.data.components.wyckoff_interface import get_effective_wyckoff_vocab_size
-        
+        from mattermake.data.components.wyckoff_interface import (
+            get_effective_wyckoff_vocab_size,
+        )
+
         if vocab_size is None:
             vocab_size = get_effective_wyckoff_vocab_size()
-        
+
         self.vocab_size = vocab_size
         self.condition_on = condition_on or []
-        
+
         # Classification head
         self.output_projection = nn.Linear(d_model, vocab_size)
-        
+
         # Space group conditioning (if space group is in condition_on)
-        if 'sg' in self.condition_on:
+        if "sg" in self.condition_on:
             self.sg_conditioning = nn.Linear(d_model, d_model)
-    
+
     def forward(
-        self, 
+        self,
         hidden_states: torch.Tensor,
         encoder_contexts: Dict[str, torch.Tensor],
         mask: Optional[torch.Tensor] = None,
-        **kwargs
+        **kwargs,
     ) -> Dict[str, torch.Tensor]:
         """
         Args:
             hidden_states: (B, L, d_model) atom embeddings
             encoder_contexts: Dictionary of encoder outputs
             mask: Optional attention mask
-        
+
         Returns:
             Dictionary with wyckoff_logits: (B, L, vocab_size) logits for Wyckoff positions
         """
         # Get space group context if available and needed
-        spacegroup_context = encoder_contexts.get('spacegroup')
-        
+        spacegroup_context = encoder_contexts.get("spacegroup")
+
         # Apply space group conditioning if available
-        if spacegroup_context is not None and hasattr(self, 'sg_conditioning'):
+        if spacegroup_context is not None and hasattr(self, "sg_conditioning"):
             # spacegroup_context is typically (B, 1, d_model)
             # Expand to (B, L, d_model) to match hidden_states
             if spacegroup_context.dim() == 3 and spacegroup_context.size(1) == 1:
-                spacegroup_context = spacegroup_context.expand(-1, hidden_states.size(1), -1)
+                spacegroup_context = spacegroup_context.expand(
+                    -1, hidden_states.size(1), -1
+                )
             elif spacegroup_context.dim() == 2:
-                spacegroup_context = spacegroup_context.unsqueeze(1).expand(-1, hidden_states.size(1), -1)
-            
+                spacegroup_context = spacegroup_context.unsqueeze(1).expand(
+                    -1, hidden_states.size(1), -1
+                )
+
             # Apply conditioning
             sg_influence = self.sg_conditioning(spacegroup_context)
             hidden_states = hidden_states + sg_influence
-        
+
         # Generate logits
         logits = self.output_projection(hidden_states)  # (B, L, vocab_size)
-        
+
         # Safety check for NaNs
         if torch.isnan(logits).any():
             logits = torch.nan_to_num(logits)
-        
+
         return {"wyckoff_logits": logits}
 
 

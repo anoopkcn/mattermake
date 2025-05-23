@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Optional, List, Union, cast
+from typing import Dict, Any, Optional, List
 
 from mattermake.models.components.modular_encoders import (
     CompositionEncoder,
@@ -60,12 +60,15 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
         **kwargs,  # Catch any extra hparams
     ):
         super().__init__()
-        
+
         # Auto-calculate Wyckoff vocab size if not provided
         if wyckoff_vocab_size is None:
-            from mattermake.data.components.wyckoff_interface import get_effective_wyckoff_vocab_size
+            from mattermake.data.components.wyckoff_interface import (
+                get_effective_wyckoff_vocab_size,
+            )
+
             wyckoff_vocab_size = get_effective_wyckoff_vocab_size()
-        
+
         # Store hyperparameters, excluding self, kwargs, __class__
         self.hparams = {
             k: v
@@ -177,7 +180,9 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
             elif name == "wyckoff":
                 self.encoders[name] = WyckoffEncoder(
                     d_output=d_model,
-                    vocab_size=config.get("vocab_size", None),  # Auto-calculated in WyckoffEncoder
+                    vocab_size=config.get(
+                        "vocab_size", None
+                    ),  # Auto-calculated in WyckoffEncoder
                     embed_dim=config.get("embed_dim", 64),
                     has_conditioning=config.get("has_conditioning", False),
                 )
@@ -239,17 +244,25 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
             elif name == "wyckoff":
                 decoders[name] = WyckoffDecoder(
                     d_model=d_model,
-                    vocab_size=config.get("vocab_size", None),  # Auto-calculated in WyckoffDecoder
+                    vocab_size=config.get(
+                        "vocab_size", None
+                    ),  # Auto-calculated in WyckoffDecoder
                     condition_on=config.get("condition_on", []),
                 )
             else:
                 print(f"Warning: Unknown decoder type '{name}' in config. Skipping.")
 
         # Default decoding order if not specified
-        decoding_order_local = ["spacegroup", "lattice", "wyckoff", "atom_type", "coordinate"] if decoding_order is None else decoding_order
+        decoding_order_local = (
+            ["spacegroup", "lattice", "wyckoff", "atom_type", "coordinate"]
+            if decoding_order is None
+            else decoding_order
+        )
 
         # Create ordered decoder registry
-        self.decoder_registry = OrderedDecoderRegistry(decoders, order=decoding_order_local)
+        self.decoder_registry = OrderedDecoderRegistry(
+            decoders, order=decoding_order_local
+        )
 
         # --- Create Attention Mechanisms & Atom Decoder ---
         # Separate attention for different prediction stages
@@ -370,24 +383,33 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
                         wyckoff_target = batch["wyckoff"]
                         wyckoff_input = wyckoff_target[:, :-1]
                         atom_mask_input = atom_mask[:, :-1]
-                        
+
                         # Validate wyckoff indices before passing to encoder
                         if wyckoff_input.numel() > 0:
                             max_wyckoff_idx = wyckoff_input.max().item()
                             min_wyckoff_idx = wyckoff_input.min().item()
-                            
+
                             # Get vocab size from encoder if available
-                            encoder_vocab_size = getattr(encoder, 'vocab_size', None)
-                            if encoder_vocab_size and max_wyckoff_idx >= encoder_vocab_size:
-                                print(f"Warning: Wyckoff indices out of range. Max index: {max_wyckoff_idx}, Encoder vocab size: {encoder_vocab_size}")
+                            encoder_vocab_size = getattr(encoder, "vocab_size", None)
+                            if (
+                                encoder_vocab_size
+                                and max_wyckoff_idx >= encoder_vocab_size
+                            ):
+                                print(
+                                    f"Warning: Wyckoff indices out of range. Max index: {max_wyckoff_idx}, Encoder vocab size: {encoder_vocab_size}"
+                                )
                                 print(f"Wyckoff input shape: {wyckoff_input.shape}")
-                                print(f"Wyckoff index range: [{min_wyckoff_idx}, {max_wyckoff_idx}]")
-                        
+                                print(
+                                    f"Wyckoff index range: [{min_wyckoff_idx}, {max_wyckoff_idx}]"
+                                )
+
                         output = encoder(
                             wyckoff_input, condition_context, atom_mask_input
                         )
                     else:
-                        print(f"Warning: wyckoff data not found in batch for encoder '{name}'. Skipping.")
+                        print(
+                            f"Warning: wyckoff data not found in batch for encoder '{name}'. Skipping."
+                        )
                         continue
                 elif name in batch:  # Generic fallback for other encoders
                     output = encoder(batch[name], condition_context)
@@ -416,13 +438,20 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
                             else:
                                 # Pad to expected length
                                 padding_size = expected_seq_len - output.size(1)
-                                padding = torch.zeros(batch_size, padding_size, self.d_model, device=device)
+                                padding = torch.zeros(
+                                    batch_size,
+                                    padding_size,
+                                    self.d_model,
+                                    device=device,
+                                )
                                 output = torch.cat([output, padding], dim=1)
-                    
+
                 # Ensure output has correct shape
                 if output.size(-1) != self.d_model:
-                    print(f"Warning: Encoder '{name}' output feature dim {output.size(-1)} != d_model {self.d_model}")
-                
+                    print(
+                        f"Warning: Encoder '{name}' output feature dim {output.size(-1)} != d_model {self.d_model}"
+                    )
+
                 encoder_outputs[name] = output
             except Exception as e:
                 print(f"Error in encoder '{name}': {e}")
@@ -446,7 +475,7 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
                 elif tensor.dim() == 2:
                     # Add sequence dimension
                     tensor = tensor.unsqueeze(1)
-                
+
                 if torch.isnan(tensor).any():
                     global_encoder_outputs[name] = torch.nan_to_num(
                         tensor, nan=0.0, posinf=1e6, neginf=-1e6
@@ -486,14 +515,18 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
         expected_atom_seq_len = atom_types_target.size(1) - 1
         atom_type_encoded = encoder_outputs.get(
             "atom_type",
-            torch.zeros((batch_size, expected_atom_seq_len, self.d_model), device=device),
+            torch.zeros(
+                (batch_size, expected_atom_seq_len, self.d_model), device=device
+            ),
         )
 
         coord_encoded = encoder_outputs.get(
             "coordinate",
-            torch.zeros((batch_size, expected_atom_seq_len, self.d_model), device=device),
+            torch.zeros(
+                (batch_size, expected_atom_seq_len, self.d_model), device=device
+            ),
         )
-        
+
         # Ensure both encodings have the same sequence length
         if atom_type_encoded.size(1) != coord_encoded.size(1):
             min_seq_len = min(atom_type_encoded.size(1), coord_encoded.size(1))
@@ -573,7 +606,11 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
         # Get atom type, wyckoff, and coordinate decoders
         atom_type_decoder = self.decoder_registry.decoders["atom_type"]
         coord_decoder = self.decoder_registry.decoders["coordinate"]
-        wyckoff_decoder = self.decoder_registry.decoders["wyckoff"] if "wyckoff" in self.decoder_registry.decoders else None
+        wyckoff_decoder = (
+            self.decoder_registry.decoders["wyckoff"]
+            if "wyckoff" in self.decoder_registry.decoders
+            else None
+        )
 
         # Run the decoders
         atom_type_outputs = atom_type_decoder(
@@ -582,7 +619,7 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
         coord_outputs = coord_decoder(
             atom_decoder_output, all_contexts, atom_mask_input
         )
-        
+
         # Run wyckoff decoder if available
         wyckoff_outputs = {}
         if wyckoff_decoder is not None:
@@ -640,14 +677,14 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
         if len(set(shapes)) == 1:
             # All shapes are the same, use simple stacking
             return torch.stack(contexts).mean(dim=0)
-        
+
         # Handle shape mismatches by finding compatible dimensions
         # Take the first tensor as reference and pad/truncate others to match
         reference_shape = contexts[0].shape
         batch_size = reference_shape[0]
         seq_len = reference_shape[1] if len(reference_shape) > 1 else 1
         feature_dim = reference_shape[-1]
-        
+
         # Pad or truncate all tensors to match reference sequence length
         aligned_contexts = []
         for ctx in contexts:
@@ -655,8 +692,13 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
                 current_seq_len = ctx.shape[1]
                 if current_seq_len < seq_len:
                     # Pad with zeros
-                    padding = torch.zeros(batch_size, seq_len - current_seq_len, feature_dim, 
-                                        device=ctx.device, dtype=ctx.dtype)
+                    padding = torch.zeros(
+                        batch_size,
+                        seq_len - current_seq_len,
+                        feature_dim,
+                        device=ctx.device,
+                        dtype=ctx.dtype,
+                    )
                     aligned_ctx = torch.cat([ctx, padding], dim=1)
                 elif current_seq_len > seq_len:
                     # Truncate
@@ -669,9 +711,9 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
                     aligned_ctx = ctx.unsqueeze(1).expand(-1, seq_len, -1)
                 else:
                     aligned_ctx = ctx
-            
+
             aligned_contexts.append(aligned_ctx)
-        
+
         # Now stack and average
         return torch.stack(aligned_contexts).mean(dim=0)
 
@@ -905,43 +947,60 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
             mapped_types[input_type_seq == self.pad_idx] = 0
 
             # Directly encode using the encoder's components
-            effective_vocab = int(getattr(atom_type_encoder, "effective_vocab_size", 103))
+            effective_vocab = int(
+                getattr(atom_type_encoder, "effective_vocab_size", 103)
+            )
             mapped_types_clamped = torch.clamp(mapped_types, 0, effective_vocab - 1)
-            
+
             # Safely access embedding and projection functions
             type_embedding_fn = getattr(atom_type_encoder, "type_embedding", None)
             projection_fn = getattr(atom_type_encoder, "projection", None)
-            
+
             if type_embedding_fn is not None and projection_fn is not None:
                 # Use the functions to process the tensors
                 type_embed = type_embedding_fn(mapped_types_clamped)
                 type_encoded = projection_fn(type_embed)
             else:
                 # Fallback to direct encoding if components not available
-                type_encoded = torch.zeros((mapped_types.size(0), mapped_types.size(1), self.d_model), device=mapped_types.device)
+                type_encoded = torch.zeros(
+                    (mapped_types.size(0), mapped_types.size(1), self.d_model),
+                    device=mapped_types.device,
+                )
 
             # Encode coordinates directly using the encoder
             coord_encoder = self.encoders["coordinate"]
             coords_mlp_fn = getattr(coord_encoder, "coords_mlp", None)
-            
+
             if coords_mlp_fn is not None:
                 # Use the function to process the coordinates
                 coord_encoded = coords_mlp_fn(input_coord_seq)
             else:
                 # Fallback if component not available
-                coord_encoded = torch.zeros((input_coord_seq.size(0), input_coord_seq.size(1), self.d_model), device=input_coord_seq.device)
+                coord_encoded = torch.zeros(
+                    (input_coord_seq.size(0), input_coord_seq.size(1), self.d_model),
+                    device=input_coord_seq.device,
+                )
 
             # Encode Wyckoff positions if available
-            wyckoff_encoded = torch.zeros((input_wyckoff_seq.size(0), input_wyckoff_seq.size(1), self.d_model), device=input_wyckoff_seq.device)
+            wyckoff_encoded = torch.zeros(
+                (input_wyckoff_seq.size(0), input_wyckoff_seq.size(1), self.d_model),
+                device=input_wyckoff_seq.device,
+            )
             if "wyckoff" in self.encoders:
                 wyckoff_encoder = self.encoders["wyckoff"]
                 try:
                     # Map special tokens for Wyckoff (use same special token mapping as types)
                     mapped_wyckoffs = input_wyckoff_seq.clone()
-                    mapped_wyckoffs[input_wyckoff_seq == self.start_idx] = 1  # Use 1 for START in Wyckoff vocab
-                    mapped_wyckoffs[input_wyckoff_seq == self.end_idx] = 1   # Use 1 for END in Wyckoff vocab  
-                    mapped_wyckoffs[input_wyckoff_seq == self.pad_idx] = 0   # Keep 0 for PAD
-                    
+                    mapped_wyckoffs[input_wyckoff_seq == self.start_idx] = (
+                        1  # Use 1 for START in Wyckoff vocab
+                    )
+                    mapped_wyckoffs[input_wyckoff_seq == self.end_idx] = (
+                        1  # Use 1 for END in Wyckoff vocab
+                    )
+                    mapped_wyckoffs[input_wyckoff_seq == self.pad_idx] = (
+                        0  # Keep 0 for PAD
+                    )
+
                     wyckoff_encoded = wyckoff_encoder(mapped_wyckoffs)
                 except Exception as e:
                     log.warning(f"Error encoding Wyckoff positions: {e}")
@@ -987,7 +1046,11 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
             # Get atom type, wyckoff, and coordinate decoders
             atom_type_decoder = self.decoder_registry.decoders["atom_type"]
             coord_decoder = self.decoder_registry.decoders["coordinate"]
-            wyckoff_decoder = self.decoder_registry.decoders["wyckoff"] if "wyckoff" in self.decoder_registry.decoders else None
+            wyckoff_decoder = (
+                self.decoder_registry.decoders["wyckoff"]
+                if "wyckoff" in self.decoder_registry.decoders
+                else None
+            )
 
             # Run decoders on the last token output
             atom_type_outputs = atom_type_decoder(
@@ -996,7 +1059,7 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
             coord_outputs = coord_decoder(
                 last_token_output.unsqueeze(1), decoder_contexts, None
             )
-            
+
             # Run wyckoff decoder if available
             wyckoff_outputs = {}
             if wyckoff_decoder is not None:
@@ -1010,17 +1073,22 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
             )  # Remove seq_len dimension
             coord_mean = coord_outputs["coord_mean"].squeeze(1)
             coord_log_var = coord_outputs["coord_log_var"].squeeze(1)
-            
+
             # Extract wyckoff predictions if available
             wyckoff_logits = None
             if wyckoff_outputs and "wyckoff_logits" in wyckoff_outputs:
                 wyckoff_logits = wyckoff_outputs["wyckoff_logits"].squeeze(1)
-                
+
                 # Apply space group masking for wyckoff positions
                 if sg_sampled is not None:
-                    from mattermake.data.components.wyckoff_interface import create_wyckoff_mask
+                    from mattermake.data.components.wyckoff_interface import (
+                        create_wyckoff_mask,
+                    )
+
                     sg_tensor = torch.tensor([sg_sampled], device=device)
-                    wyckoff_mask = create_wyckoff_mask(sg_tensor, device)  # (1, vocab_size)
+                    wyckoff_mask = create_wyckoff_mask(
+                        sg_tensor, device
+                    )  # (1, vocab_size)
                     wyckoff_logits = wyckoff_logits.masked_fill(~wyckoff_mask, -1e9)
 
             # Final safeguard for all outputs
@@ -1084,7 +1152,9 @@ class ModularHierarchicalCrystalTransformerBase(nn.Module):
             generated_coords.append(next_coords)  # Keep as tensor (1, 3)
 
             input_type_seq = torch.cat([input_type_seq, next_type.to(device)], dim=1)
-            input_wyckoff_seq = torch.cat([input_wyckoff_seq, next_wyckoff.to(device)], dim=1)
+            input_wyckoff_seq = torch.cat(
+                [input_wyckoff_seq, next_wyckoff.to(device)], dim=1
+            )
             input_coord_seq = torch.cat(
                 [input_coord_seq, next_coords.unsqueeze(1).to(device)], dim=1
             )

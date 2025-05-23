@@ -1,5 +1,6 @@
 from typing import Any, Dict, List, Optional, Tuple
 import os
+import warnings
 import hydra
 
 import lightning.pytorch as pl
@@ -28,6 +29,9 @@ from mattermake.utils import (
 )
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
+
+# Suppress PyTorch nested tensor prototype warnings
+warnings.filterwarnings("ignore", message=".*nested tensors.*prototype stage.*")
 
 log = RankedLogger(__name__, rank_zero_only=True)
 

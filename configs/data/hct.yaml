@@ -1,5 +1,5 @@
 _target_: mattermake.data.hct_datamodule.HCTDataModule
-processed_data_dir: ${paths.data_dir}/hct_data_40k
+processed_data_dir: ${paths.data_dir}/hct_data_full
 batch_size: 32
 num_workers: 4
 pin_memory: true

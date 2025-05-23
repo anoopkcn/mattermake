@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """
-Dataset Creation Script for Updated Wyckoff Encoder System
-
 This script creates datasets compatible with the updated Wyckoff encoder neural network system.
 It processes crystal structure data (CIF files, Materials Project data, etc.) and converts them
 to the format expected by the HCTDataset class with proper Wyckoff encoding.

@@ -6,7 +6,7 @@ strategy:
   find_unused_parameters: true # MODIFIED as suggested by DDP error
 
 accelerator: gpu
-devices: 2  # Updated to match available hardware
+devices: 4  # Updated to match available hardware
 # Set to your actual node count
 num_nodes: 1  # Using a single node
 sync_batchnorm: True

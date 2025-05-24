@@ -5,20 +5,20 @@ wyckoff_vocab_size: null  # Auto-calculated from wyckoff interface
 pad_idx: 0
 start_idx: -1
 end_idx: -2
-d_model: 256
-type_embed_dim: 64
-wyckoff_embed_dim: 64
+d_model: 512
+type_embed_dim: 128
+wyckoff_embed_dim: 128
 nhead: 8
-num_atom_decoder_layers: 4
-dim_feedforward: 1024
+num_atom_decoder_layers: 6
+dim_feedforward: 2048
 dropout: 0.1
 encoder_configs:
   composition:
-    num_layers: 2
+    num_layers: 3
   spacegroup:
-    embed_dim: 64
+    embed_dim: 128
   lattice:
-    latent_dim: 64
+    latent_dim: 128
     equivariant: false
     has_conditioning: true
     depends_on:
@@ -32,7 +32,7 @@ encoder_configs:
   atom_type:
     element_vocab_size: ${model.element_vocab_size}
     type_embed_dim: ${model.type_embed_dim}
-    num_layers: 2
+    num_layers: 3
     nhead: ${model.nhead}
     dim_feedforward: ${model.dim_feedforward}
     dropout: ${model.dropout}
@@ -46,8 +46,8 @@ encoder_configs:
     - lattice
     - wyckoff
   coordinate:
-    hidden_dim: 128
-    num_layers: 2
+    hidden_dim: 256
+    num_layers: 3
     nhead: ${model.nhead}
     dim_feedforward: ${model.dim_feedforward}
     dropout: ${model.dropout}
@@ -57,8 +57,15 @@ encoder_configs:
     - spacegroup
     - lattice
     - wyckoff
-learning_rate: 1e-4
+learning_rate: 5e-5
 weight_decay: 0.01
+# Learning rate scheduling
+lr_scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  T_max: 100
+  eta_min: 1e-6
+warmup_steps: 1000
+use_lr_scheduler: true
 sg_loss_weight: 1.0
 lattice_loss_weight: 1.0
 wyckoff_loss_weight: 1.0

@@ -44,3 +44,5 @@ tags: ["mhct", "material-design"] # MODIFIED
 
 trainer:
   gradient_clip_val: 1.0
+  max_epochs: 100
+  min_epochs: 10
